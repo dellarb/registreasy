@@ -1,0 +1,16 @@
+version: 0.1
+
+log:
+  level: info
+
+storage:
+  filesystem:
+    rootdirectory: /data
+  delete:
+    enabled: false
+
+# Nginx is the only public listener. No debug/metrics listener is enabled.
+http:
+  addr: 127.0.0.1:5001
+  headers:
+    X-Content-Type-Options: [nosniff]
