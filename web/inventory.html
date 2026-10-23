@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>Registreasy · Image inventory</title>
+<link rel="stylesheet" href="/inventory.css">
+<script defer src="/inventory.js"></script>
+</head>
+<body>
+<main class="shell">
+<header class="header">
+  <div class="brand"><div class="mark" aria-hidden="true">R</div><div><strong>Registreasy</strong><small>Container image inventory</small></div></div>
+  <div class="status"><span id="status-dot" class="dot loading"></span><span id="status-text">Checking health…</span></div>
+</header>
+<div class="heading"><div><h1>Repositories</h1><p>Read-only images and version history.</p></div><button id="refresh" type="button">↻ Refresh</button></div>
+<section class="stats" aria-label="Registry statistics">
+  <div class="stat"><small>Repositories</small><strong id="repo-count">—</strong></div>
+  <div class="stat"><small>Tags</small><strong id="tag-count">—</strong></div>
+  <div class="stat"><small>Last checked</small><strong id="last-checked" class="time">—</strong></div>
+</section>
+<label for="filter" class="filter-label">Filter repositories or tags</label>
+<input id="filter" type="search" placeholder="Search images or versions…" autocomplete="off">
+<div id="notice" class="notice" role="status">Loading inventory…</div>
+<section id="repositories" aria-label="Repositories" class="repositories"></section>
+<footer>
+  <span>¹ Tag updated: approximate stored-tag timestamp. ² Image built: metadata from the image, not its publication date.</span>
+  <a href="/healthz" target="_blank" rel="noopener noreferrer">View health JSON ↗</a>
+</footer>
+</main>
+</body>
+</html>

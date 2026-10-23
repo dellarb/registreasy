@@ -38,6 +38,10 @@ jobs:
           docker push localhost:15002/test/alpine:ci
           docker logout localhost:15002
           docker pull localhost:15000/test/alpine:ci
+          curl -fsS http://127.0.0.1:15000/healthz | python3 -c 'import json,sys; x=json.load(sys.stdin); assert x["status"]=="ok" and x["storage"]["writable"]'
+          curl -fsS http://127.0.0.1:15000/ | grep -q 'Image inventory'
+          curl -fsS http://127.0.0.1:15000/inventory.js | grep -q 'function render'
+          curl -fsS http://127.0.0.1:15000/api/inventory | python3 -c 'import json,sys; x=json.load(sys.stdin); assert x["repository_count"]>=1; assert any(t["tag"]=="ci" and t["tag_updated_at"] for r in x["repositories"] if r["name"]=="test/alpine" for t in r["tags"])'
 
       - name: Protected read and read-only user
         shell: bash
@@ -57,6 +61,11 @@ jobs:
           done
           PUSH_PASSWORD=test-push-password PULL_PASSWORD=test-pull-password \
             bash tests/smoke.sh http://127.0.0.1:15000 http://127.0.0.1:15002
+          test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:15000/)" = 401
+          test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:15000/api/inventory)" = 401
+          curl -fsS -u pull:test-pull-password http://127.0.0.1:15000/ | grep -q 'Image inventory'
+          curl -fsS -u pull:test-pull-password http://127.0.0.1:15000/api/inventory | python3 -c 'import json,sys; assert json.load(sys.stdin)["tag_count"]>=1'
+          curl -fsS http://127.0.0.1:15000/healthz | python3 -c 'import json,sys; assert json.load(sys.stdin)["status"]=="ok"'
           printf '%s\n' test-pull-password | docker login localhost:15000 -u pull --password-stdin
           docker pull localhost:15000/test/alpine:ci
           docker tag alpine:3.20 localhost:15000/test/alpine:ci

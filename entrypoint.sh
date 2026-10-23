@@ -67,15 +67,17 @@ unset PUSH_PASSWORD PULL_PASSWORD
 nginx -t
 registry serve /etc/distribution/config.yml &
 registry_pid=$!
+python3 /opt/registreasy/inventory.py &
+inventory_pid=$!
 nginx -g 'daemon off;' &
 nginx_pid=$!
 
 cleanup() {
     trap - EXIT INT TERM
-    kill "$registry_pid" "$nginx_pid" 2>/dev/null || true
-    wait "$registry_pid" "$nginx_pid" 2>/dev/null || true
+    kill "$registry_pid" "$nginx_pid" "$inventory_pid" 2>/dev/null || true
+    wait "$registry_pid" "$nginx_pid" "$inventory_pid" 2>/dev/null || true
 }
 trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
-wait -n "$registry_pid" "$nginx_pid"
+wait -n "$registry_pid" "$nginx_pid" "$inventory_pid"

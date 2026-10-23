@@ -8,6 +8,7 @@ A **single-container Docker registry** powered by upstream CNCF Distribution v3 
 - Publishing always requires the publisher's credentials
 - Standard `docker login`, `docker push`, `docker pull`, and Compose updates
 - No custom Docker registry protocol or custom token-authentication service
+- Built-in **read-only inventory page** and **/healthz** endpoint
 
 **Why two endpoints?** Docker clients probe `GET /v2/` first and will not reliably send publishing credentials when that probe allows anonymous access. To support **both anonymous pulls and reliable `docker push`**, Registreasy exposes two ports on the *same container*, both using the *same Registry v3 storage*:
 
@@ -42,6 +43,22 @@ docker network connect registreasy_default <npm-container-name>
 ```
 
 The exact network name depends on your Docker Compose project name (check `docker network ls`). NPM can then resolve `registreasy` by container name. If NPM is on another host, bind both host ports to your server's LAN IP with `BIND_ADDRESS` and restrict inbound connections to NPM using a firewall.
+
+## Inventory and health
+
+Browse the **read endpoint's root URL**, for example `https://registry.example.com/`, to see a read-only inventory. It groups image repositories and displays tags, manifest digests, image build dates (where present in OCI/Docker config) and approximate tag update dates. It includes a repository/tag filter and health status.
+
+| Route on read endpoint | Behaviour |
+| --- | --- |
+| `GET /` | Inventory UI, protected by `PULL_PASSWORD` when set |
+| `GET /api/inventory` | JSON repository/tag inventory, same read authentication |
+| `GET /healthz` | Unauthenticated health JSON (HTTP 200 healthy, HTTP 503 degraded) |
+
+`/healthz` checks that the underlying Registry v3 API responds and that the image storage is writable, and shows available storage bytes. The container healthcheck uses this endpoint.
+
+**Dates:** The tag update date comes from the Registry filesystem's current tag-link modification time and is only an approximation of the last time the tag was written; it is not a reliable historical push event timestamp. An image's build timestamp comes from its OCI/Docker metadata and can be absent or very different from its push date. Historical versions are shown only while tagged. The inventory is cached for up to 20 seconds and currently supports up to 2,000 listed repositories/tags.
+
+No separate container, database, ports or volumes are required. The UI is on the **read port** only; it has no write functions and respects the optional pull password.
 
 ## Configuration
 
