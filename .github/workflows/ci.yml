@@ -1,0 +1,72 @@
+name: Build and integration test
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build single-container registry
+        run: docker build -t registreasy:test .
+      - name: Anonymous pull and authenticated push
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .ci-data
+          docker run -d --name registreasy-ci \
+            -p 127.0.0.1:15000:5000 \
+            -e PUSH_PASSWORD=test-push-password \
+            -v "$PWD/.ci-data:/data" \
+            registreasy:test
+          for i in {1..30}; do
+            if curl --fail --silent http://127.0.0.1:15000/v2/ >/dev/null; then break; fi
+            sleep 1
+          done
+          PUSH_PASSWORD=test-push-password bash tests/smoke.sh http://127.0.0.1:15000
+          docker pull alpine:3.20
+          docker tag alpine:3.20 localhost:15000/test/alpine:ci
+          printf '%s\n' test-push-password | docker login localhost:15000 -u push --password-stdin
+          docker push localhost:15000/test/alpine:ci
+          docker logout localhost:15000
+          docker image rm localhost:15000/test/alpine:ci
+          docker pull localhost:15000/test/alpine:ci
+
+      - name: Protected pull and read-only account
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker rm -f registreasy-ci
+          docker run -d --name registreasy-ci \
+            -p 127.0.0.1:15000:5000 \
+            -e PUSH_PASSWORD=test-push-password \
+            -e PULL_PASSWORD=test-pull-password \
+            -v "$PWD/.ci-data:/data" \
+            registreasy:test
+          for i in {1..30}; do
+            if [[ "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:15000/v2/)" == 401 ]]; then break; fi
+            sleep 1
+          done
+          PUSH_PASSWORD=test-push-password PULL_PASSWORD=test-pull-password \
+            bash tests/smoke.sh http://127.0.0.1:15000
+          printf '%s\n' test-pull-password | docker login localhost:15000 -u pull --password-stdin
+          docker pull localhost:15000/test/alpine:ci
+          if docker push localhost:15000/test/alpine:ci; then
+            echo "ERROR: read-only credentials succeeded in pushing" >&2
+            exit 1
+          fi
+          docker logout localhost:15000
+          printf '%s\n' test-push-password | docker login localhost:15000 -u push --password-stdin
+          docker push localhost:15000/test/alpine:ci
+
+      - name: Diagnostics
+        if: always()
+        run: |
+          docker logs registreasy-ci || true
+          docker rm -f registreasy-ci || true
