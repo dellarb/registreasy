@@ -1,104 +1,113 @@
 # Registreasy
 
-A small, single-container Docker/OCI registry with **authenticated pushes** and **optional anonymous pulls**. It packages the upstream [CNCF Distribution Registry v3](https://distribution.github.io/distribution/) and Nginx; it does not reimplement the registry protocol.
+A **single-container Docker registry** powered by upstream CNCF Distribution v3 and Nginx. Built for simple self-hosted image publishing, with an optional password for pulls and a separate password for pushes.
 
-- One Docker container and one port
-- `PUSH_PASSWORD` is required
-- `PULL_PASSWORD` is optional; blank means anyone who can reach the service may pull
-- A read-only account cannot publish, replace, or delete images
-- All images persist in `./data`
-- Works with standard Docker CLI and Docker Compose
-- No database, UI, token service, or custom registry protocol
+- One container, one `./data` persistence directory, no external database
+- `PUSH_PASSWORD` **required**, `PULL_PASSWORD` **optional**
+- Anonymous pulls by default
+- Publishing always requires the publisher's credentials
+- Standard `docker login`, `docker push`, `docker pull`, and Compose updates
+- No custom Docker registry protocol or custom token-authentication service
 
-## Quick start
+**Why two endpoints?** Docker clients probe `GET /v2/` first and will not reliably send publishing credentials when that probe allows anonymous access. To support **both anonymous pulls and reliable `docker push`**, Registreasy exposes two ports on the *same container*, both using the *same Registry v3 storage*:
+
+| Endpoint | Container port | NPM hostname example | Access |
+| --- | --- | --- | --- |
+| Read | `5000` | `registry.example.com` | GET/HEAD, anonymous unless `PULL_PASSWORD` is set |
+| Publish | `5002` | `registry-push.example.com` | All registry operations, publisher account required |
+
+The internal Registry v3 process listens only on loopback port 5001. You do not need two registry containers or two data directories.
+
+## Deploy
 
 ```bash
 git clone https://github.com/berenebot-agent/registreasy.git
 cd registreasy
 cp .env.example .env
-# Edit .env and set a long, random PUSH_PASSWORD
+# Replace PUSH_PASSWORD in .env with a long random secret
 chmod 600 .env
 docker compose up -d --build
+docker compose logs -f
 ```
 
-By default, the port is bound to **127.0.0.1:5000** so an upstream HTTPS reverse proxy can be used without exposing unencrypted credentials on the LAN.
+By default both host ports bind to `127.0.0.1`; this avoids exposing HTTP Basic credentials over your LAN before configuring HTTPS. In Nginx Proxy Manager, add **two proxy hosts**, using TLS certificates:
 
-In Nginx Proxy Manager, forward your TLS-enabled registry hostname to `registreasy:5000` on a shared Docker network, or to the host's selected address and port. For NPM on the **same Docker host**, attach its container to the project's network:
+- `registry.example.com` -> `http://registreasy:5000`
+- `registry-push.example.com` -> `http://registreasy:5002`
+
+If NPM runs on the same Docker host, connect its existing container to the Compose network:
 
 ```bash
 docker network connect registreasy_default <npm-container-name>
 ```
 
-Then forward to `registreasy`, port `5000`. If Docker Compose uses a different project name, inspect `docker network ls`.
-
-If NPM runs on **another machine**, set `BIND_ADDRESS` in `.env` to this server's LAN IP (not 127.0.0.1), and firewall the port so only NPM can reach it. Never publish plain HTTP directly to the internet; HTTP Basic credentials require TLS in transit.
-
-Check the API through your proxy:
-
-```bash
-curl -i https://registry.example.com/v2/
-```
-
-An anonymous-read registry returns HTTP 200. A registry with `PULL_PASSWORD` set returns HTTP 401 until valid credentials are sent.
+The exact network name depends on your Docker Compose project name (check `docker network ls`). NPM can then resolve `registreasy` by container name. If NPM is on another host, bind both host ports to your server's LAN IP with `BIND_ADDRESS` and restrict inbound connections to NPM using a firewall.
 
 ## Configuration
 
-| Environment variable | Default | Purpose |
+| Variable | Default | Meaning |
 | --- | --- | --- |
-| `PUSH_PASSWORD` | **Required** | Password for the publishing account |
-| `PUSH_USERNAME` | `push` | Publishing account name |
-| `PULL_PASSWORD` | Empty | Optional password to require for pulls |
-| `PULL_USERNAME` | `pull` | Read-only account name (if enabled) |
-| `BIND_ADDRESS` | `127.0.0.1` | Host address for Docker's published port |
-| `PORT` | `5000` | Host port; internal container port is always 5000 |
+| `PUSH_PASSWORD` | **Required** | Publisher password |
+| `PUSH_USERNAME` | `push` | Publisher login |
+| `PULL_PASSWORD` | Empty | Blank allows anyone with network access to pull |
+| `PULL_USERNAME` | `pull` | Read-only login if `PULL_PASSWORD` is set |
+| `BIND_ADDRESS` | `127.0.0.1` | Host interface on which both ports are published |
+| `PORT` | `5000` | Read-only host port |
+| `PUSH_PORT` | `5002` | Publishing host port |
 
-Usernames accept letters, digits, underscore, hyphen and dot. Push and pull usernames must differ. The publishing user also has pull permissions. The `./data` directory is the only required persistent mount; image data stays there. Generated bcrypt password files live only in the container's runtime directory and are recreated at startup.
+Publisher credentials also permit read access. Read-only credentials **never permit writes**. Usernames accept letters, numbers, periods, underscores and hyphens, and must differ if both credentials are configured.
 
-### Open pull, restricted push (default)
-
-On an HTTPS-enabled build host:
+## Publish an image
 
 ```bash
-# Not a reliable password check with anonymous pulls: see note below
-docker login registry.example.com -u push
-docker tag alpine:latest registry.example.com/demo/alpine:1
-docker push registry.example.com/demo/alpine:1
+docker login registry-push.example.com -u push
+docker pull alpine:latest
+docker tag alpine:latest registry-push.example.com/demo/alpine:1
+docker push registry-push.example.com/demo/alpine:1
 ```
 
-On a deployment host, without logging in:
+## Pull or deploy the same image
+
+No login is required when `PULL_PASSWORD` is empty:
 
 ```bash
 docker pull registry.example.com/demo/alpine:1
 ```
 
-An app can use `image: registry.example.com/demo/alpine:1` with normal `docker compose pull && docker compose up -d`.
+For your application:
 
-### Protected pulls
+```yaml
+services:
+  app:
+    image: registry.example.com/demo/alpine:1
+    restart: unless-stopped
+```
 
-Set `PULL_PASSWORD` and restart with `docker compose up -d`. Pull users log in using `PULL_USERNAME` and `PULL_PASSWORD`. The publishing user can still read, but the pull user cannot write.
+When a version or tag changes: `docker compose pull && docker compose up -d`. The publisher and read hostname refer to the **same repository and tag** in the same underlying storage.
 
-**Important Docker CLI behaviour:** when pulls are anonymous, `GET /v2/` does not challenge the client. Consequently, `docker login` may say it succeeded even with an incorrect push password; an actual `docker push` is the authorization test. When pull authentication is enabled, login performs a meaningful credential check.
+If you set `PULL_PASSWORD`, first use `docker login registry.example.com -u pull` on the remote host. Credentials persist in Docker's local credential store or configuration.
 
-## Security and limitations
+## Security
 
-- This is intended for small, single-node registries. It has no user-management UI or fine-grained per-repository policies.
-- The Nginx proxy is the **only external path** to Registry v3, which listens on loopback inside the container.
-- GET and HEAD are read methods. Nginx requires the publishing account for POST, PUT, PATCH, DELETE and all other methods.
-- Registry v3 has its delete API disabled by default, including for publishers.
-- When `PULL_PASSWORD` is unset, image contents, tags and manifests are accessible to anyone who can connect. Use a LAN/Tailscale firewall or HTTPS proxy access restrictions if needed.
-- NPM handles HTTPS. Do **not** send Basic credentials over unencrypted HTTP except for controlled localhost testing.
-- Docker Compose interpolates passwords into the container environment and Docker administrators can inspect them. Keep `.env` private, restrict host access, and rotate credentials when necessary.
-- Back up `./data`. Avoid editing registry storage directly.
-- `docker login` credentials persist in Docker's credential store (or its local Docker configuration) until changed or removed.
+- Both endpoints need trusted HTTPS when accessed from other machines. NPM should terminate TLS.
+- Only Nginx reaches the internal Registry v3 backend; direct backend access is blocked.
+- Read endpoint blocks all non-GET/HEAD methods, regardless of username.
+- The publishing endpoint challenges credentials at `GET /v2/`, which is required for reliable Docker CLI publishing.
+- Registry manifest deletion is disabled by default. No deletion controls or user-management UI are provided.
+- Without `PULL_PASSWORD`, images and tags are not confidential. Limit access through LAN/Tailscale/firewall rules if that matters.
+- Environment secrets are visible to host-level Docker administrators via container inspection. Keep `.env` private, and rotate passwords when needed.
+- Persistent image storage and the stable internal HTTP signing secret live in `./data`; back it up.
+- `PUSH_PORT` should only be reachable through the trusted TLS proxy. Limit access to it further by source IP if desired.
 
-## Development and tests
+## Development
 
 ```bash
 docker build -t registreasy:local .
-PUSH_PASSWORD=test-push docker compose up -d --build
-bash tests/smoke.sh http://127.0.0.1:5000
+PUSH_PASSWORD=test-password docker compose up -d --build
+PUSH_PASSWORD=test-password bash tests/smoke.sh \
+  http://127.0.0.1:5000 http://127.0.0.1:5002
 ```
 
-The smoke test checks anonymous read and writer authentication at the HTTP API level. CI also builds the container and runs real Docker push/pull scenarios in both authentication modes.
+The smoke tests exercise both endpoints' access permissions. GitHub Actions additionally tests real `docker login`, push and pull behaviour in both anonymous and protected-read modes.
 
-Source: [CNCF Distribution](https://distribution.github.io/distribution/), [Nginx](https://nginx.org/).
+This project wraps [CNCF Distribution](https://distribution.github.io/distribution/) and [Nginx](https://nginx.org/), rather than implementing image storage itself.

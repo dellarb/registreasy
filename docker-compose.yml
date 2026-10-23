@@ -5,8 +5,9 @@ services:
     container_name: registreasy
     restart: unless-stopped
     ports:
-      # Loopback by default. Put a TLS reverse proxy in front before exposing it.
+      # Two endpoints, one container/storage. Bind loopback unless behind trusted HTTPS.
       - "${BIND_ADDRESS:-127.0.0.1}:${PORT:-5000}:5000"
+      - "${BIND_ADDRESS:-127.0.0.1}:${PUSH_PORT:-5002}:5002"
     environment:
       PUSH_USERNAME: ${PUSH_USERNAME:-push}
       PUSH_PASSWORD: ${PUSH_PASSWORD:?PUSH_PASSWORD must be set in .env}

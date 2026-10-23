@@ -1,21 +1,19 @@
 # syntax=docker/dockerfile:1
-# Reuse the upstream Docker Distribution v3 binary; add only nginx and startup glue.
+# The upstream Docker Distribution v3 binary does all image storage and transfer.
 FROM registry:3 AS distribution
-
 FROM nginx:1.28-alpine
 
 RUN apk add --no-cache apache2-utils bash tini
-
 COPY --from=distribution /bin/registry /usr/local/bin/registry
 COPY registry.yml /etc/distribution/config.yml
 COPY nginx.conf /etc/nginx/nginx.conf
+COPY registry-proxy.conf /etc/nginx/registry-proxy.conf
 COPY entrypoint.sh /usr/local/bin/registreasy-entrypoint
 RUN chmod 0755 /usr/local/bin/registreasy-entrypoint \
     && mkdir -p /data /run/registreasy
 
 ENV OTEL_TRACES_EXPORTER=none
-
-EXPOSE 5000
+EXPOSE 5000 5002
 VOLUME ["/data"]
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
