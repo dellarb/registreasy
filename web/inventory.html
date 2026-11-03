@@ -10,10 +10,37 @@
 <body>
 <main class="shell">
 <header class="header">
-  <div class="brand"><div class="mark" aria-hidden="true">R</div><div><strong>Registreasy</strong><small>Container image inventory</small></div></div>
-  <div class="status"><span id="status-dot" class="dot loading"></span><span id="status-text">Checking health…</span></div>
+  <div class="brand"><div class="mark" aria-hidden="true">R</div><div><strong>Registreasy</strong><small>Container image registry</small></div></div>
+  <div class="header-right">
+    <div class="status"><span id="status-dot" class="dot loading"></span><span id="status-text">Checking health…</span></div>
+    <button id="signout" type="button" class="ghost hidden">Sign out</button>
+  </div>
 </header>
-<div class="heading"><div><h1>Repositories</h1><p>Read-only images and version history.</p></div><button id="refresh" type="button">↻ Refresh</button></div>
+
+<section id="signin" class="signin hidden" aria-labelledby="signin-title">
+  <div class="signin-card">
+    <h1 id="signin-title">Sign in</h1>
+    <p class="signin-lede">Choose what you need to do, then enter that account's password.</p>
+    <div class="modes" role="radiogroup" aria-label="Access type">
+      <button type="button" class="mode" role="radio" aria-checked="true" data-mode="pull">
+        <strong>Pull</strong><small>Browse and download images (read-only)</small>
+      </button>
+      <button type="button" class="mode" role="radio" aria-checked="false" data-mode="push">
+        <strong>Push</strong><small>Publish and delete images</small>
+      </button>
+    </div>
+    <form id="signin-form" autocomplete="off">
+      <label for="password">Password for <code id="signin-user">pull</code></label>
+      <input id="password" type="password" autocomplete="current-password" required>
+      <div id="signin-error" class="form-error hidden" role="alert"></div>
+      <button id="signin-submit" type="submit" class="primary">Sign in</button>
+    </form>
+    <p class="signin-foot">Your password is kept only in this tab and is cleared when you sign out or reload.</p>
+  </div>
+</section>
+
+<section id="app" class="hidden">
+<div class="heading"><div><h1>Repositories</h1><p id="app-sub">Images and version history.</p></div><button id="refresh" type="button">↻ Refresh</button></div>
 <section class="stats" aria-label="Registry statistics">
   <div class="stat"><small>Repositories</small><strong id="repo-count">—</strong></div>
   <div class="stat"><small>Tags</small><strong id="tag-count">—</strong></div>
@@ -27,6 +54,7 @@
   <span>¹ Tag updated: approximate stored-tag timestamp. ² Image built: metadata from the image, not its publication date.</span>
   <a href="/healthz" target="_blank" rel="noopener noreferrer">View health JSON ↗</a>
 </footer>
+</section>
 </main>
 </body>
 </html>

@@ -10,3 +10,23 @@ button.danger{background:#b3263e}button.danger:hover:not(:disabled){background:#
 footer{margin-top:28px;color:#78869c;font-size:12px;display:flex;gap:18px;justify-content:space-between;line-height:1.5}footer a{white-space:nowrap;color:#2053af;text-decoration:none}
 @media(max-width:660px){.shell{padding:18px 13px 35px}.heading h1{font-size:24px}.stats{gap:7px}.stat{padding:12px}.stat strong{font-size:22px}.stat .time{font-size:12px}.repo-head{padding:14px}.repo-foot{padding:10px 14px}footer{flex-direction:column}.status{font-size:11px}}
 @media(prefers-color-scheme:dark){:root{background:#0d1523;color:#e1eaf5}.header{border-color:#273449}.brand small,.heading p{color:#96a7bf}.status,.stat,.repo,.notice{background:#172233;border-color:#2c3b52}.stat small,.filter-label,.repo-meta,.repo-foot,footer{color:#9dacbf}input{background:#172233;border-color:#33445c}th{background:#1c293b;color:#99abc1}td,.repo-head,.repo-foot{border-color:#2b394c}td,code{color:#c0ccdd}.tag{background:#203f68;color:#a6caff}.notice.error{background:#34202b;color:#ffacb9;border-color:#774452}footer a{color:#9fc4ff}}
+.hidden{display:none!important}
+.header-right{display:flex;align-items:center;gap:10px}
+button.ghost{background:transparent;color:#2053af;border:1px solid #c9d6ea;padding:9px 13px}button.ghost:hover:not(:disabled){background:#eef4fc}
+button.primary{width:100%;padding:13px 16px;font-size:15px}
+.signin{display:flex;justify-content:center;padding:48px 0}
+.signin-card{width:100%;max-width:420px;background:white;border:1px solid #dce3ed;border-radius:14px;padding:28px 26px}
+.signin-card h1{font-size:24px;letter-spacing:-.03em;margin:0 0 6px}
+.signin-lede{color:#65758d;margin:0 0 20px;line-height:1.5}
+.modes{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:20px}
+.mode{display:flex;flex-direction:column;gap:4px;text-align:left;background:#f7f9fc;color:#17243d;border:1px solid #d4dded;border-radius:11px;padding:14px;font-weight:400}
+.mode strong{font-size:15px}.mode small{color:#6b7a90;font-size:12px;line-height:1.4;white-space:normal}
+.mode:hover:not(:disabled){background:#eef4fc}
+.mode.on{background:#e9f1ff;border-color:#2053af;box-shadow:0 0 0 1px #2053af inset}
+#signin-form label{display:block;font-size:12px;font-weight:700;color:#64748b;margin-bottom:7px}
+#signin-form code{color:#2053af;font-size:12px}
+#password{margin-bottom:14px}
+.form-error{color:#ab3144;background:#fff4f5;border:1px solid #efb0bd;border-radius:9px;padding:10px 12px;margin:-4px 0 14px;font-size:13px}
+.signin-foot{color:#8a97a8;font-size:11px;margin:18px 0 0;line-height:1.5}
+@media(max-width:660px){.signin-card{padding:22px 18px}.modes{grid-template-columns:1fr}}
+@media(prefers-color-scheme:dark){.signin-card{background:#172233;border-color:#2c3b52}.signin-lede,.mode small{color:#96a7bf}.mode{background:#1c293b;color:#e1eaf5;border-color:#33445c}.mode:hover:not(:disabled){background:#223248}.mode.on{background:#203f68;border-color:#6aa2ff;box-shadow:0 0 0 1px #6aa2ff inset}button.ghost{color:#9fc4ff;border-color:#33445c}button.ghost:hover:not(:disabled){background:#1c293b}.form-error{background:#34202b;color:#ffacb9;border-color:#774452}#signin-form label{color:#9dacbf}#signin-form code{color:#9fc4ff}}

@@ -4,6 +4,15 @@ const notice = document.querySelector('#notice');
 const filter = document.querySelector('#filter');
 const refresh = document.querySelector('#refresh');
 let inventory = null;
+// Session lives only in this page's memory: reloading or signing out clears it.
+let session = null; // { mode: 'pull'|'push', auth: 'Basic …' }
+const signin = document.querySelector('#signin');
+const app = document.querySelector('#app');
+const signout = document.querySelector('#signout');
+const signinForm = document.querySelector('#signin-form');
+const signinError = document.querySelector('#signin-error');
+const signinSubmit = document.querySelector('#signin-submit');
+let mode = 'pull';
 
 function formatted(value) {
   if (!value) return 'Unavailable';
@@ -19,8 +28,8 @@ function el(name, className, value) {
 }
 async function callDelete(body) {
   const response = await fetch('/api/delete', {
-    method: 'POST', cache: 'no-store', credentials: 'same-origin',
-    headers: { 'Content-Type': 'application/json', 'X-Registreasy-Action': 'delete' },
+    method: 'POST', cache: 'no-store', credentials: 'omit',
+    headers: { 'Content-Type': 'application/json', 'X-Registreasy-Action': 'delete', Authorization: session.auth },
     body: JSON.stringify(body),
   });
   const payload = await response.json().catch(() => ({}));
@@ -124,23 +133,91 @@ async function getHealth() {
     label.textContent = healthy ? 'Registry healthy' : 'Registry degraded';
   } catch { dot.className='dot bad'; label.textContent='Health unavailable'; }
 }
+function applyInventory() {
+  document.querySelector('#repo-count').textContent=inventory.repository_count;
+  document.querySelector('#tag-count').textContent=inventory.tag_count;
+  document.querySelector('#last-checked').textContent=formatted(inventory.generated_at);
+  render();
+}
 async function load() {
+  if (!session) return showSignin();
   refresh.disabled=true;
   notice.textContent='Loading inventory…';
   notice.classList.remove('hidden','error');
   try {
-    const response = await fetch('/api/inventory',{cache:'no-store'});
+    const response = await fetch('/api/inventory',{cache:'no-store', credentials:'omit', headers: {Authorization: session.auth}});
+    if (response.status === 401) { showSignin('That password was not accepted for ' + session.user + '.'); return; }
     if (!response.ok) throw Error('Inventory unavailable (HTTP '+response.status+')');
     inventory=await response.json();
-    document.querySelector('#repo-count').textContent=inventory.repository_count;
-    document.querySelector('#tag-count').textContent=inventory.tag_count;
-    document.querySelector('#last-checked').textContent=formatted(inventory.generated_at);
-    render();
+    applyInventory();
   } catch(error) {
     inventory=null;list.replaceChildren();notice.textContent=error.message || 'Inventory unavailable';notice.classList.add('error');
   } finally { refresh.disabled=false; }
   await getHealth();
 }
+function setMode(next) {
+  mode = next;
+  for (const b of document.querySelectorAll('.mode')) {
+    const on = b.dataset.mode === next;
+    b.setAttribute('aria-checked', on ? 'true' : 'false');
+    b.classList.toggle('on', on);
+  }
+  document.querySelector('#signin-user').textContent = next;
+  document.querySelector('#password').value = '';
+  signinError.classList.add('hidden');
+  document.querySelector('#password').focus();
+}
+function showSignin(message) {
+  session = null;
+  inventory = null;
+  list.replaceChildren();
+  app.classList.add('hidden');
+  signout.classList.add('hidden');
+  signin.classList.remove('hidden');
+  if (message) { signinError.textContent = message; signinError.classList.remove('hidden'); }
+  setMode(mode);
+}
+function showApp() {
+  signin.classList.add('hidden');
+  app.classList.remove('hidden');
+  signout.classList.remove('hidden');
+  document.querySelector('#app-sub').textContent = session.mode === 'push'
+    ? 'Publisher access: you can delete tags and repositories.'
+    : 'Read-only access: browse and pull images.';
+}
+for (const b of document.querySelectorAll('.mode')) b.addEventListener('click', () => setMode(b.dataset.mode));
+signinForm.addEventListener('submit', async event => {
+  event.preventDefault();
+  const pw = document.querySelector('#password').value;
+  if (!pw) return;
+  const user = mode;
+  // Passwords ride only in the Authorization header of this request's session.
+  const candidate = { mode, user, auth: 'Basic ' + btoa(user + ':' + pw) };
+  signinSubmit.disabled = true;
+  signinError.classList.add('hidden');
+  try {
+    const response = await fetch('/api/inventory', {cache:'no-store', credentials:'omit', headers:{Authorization: candidate.auth}});
+    if (response.status === 401) {
+      signinError.textContent = 'That password was not accepted.';
+      signinError.classList.remove('hidden');
+      document.querySelector('#password').select();
+      return;
+    }
+    if (!response.ok) throw Error('HTTP ' + response.status);
+    session = candidate;
+    document.querySelector('#password').value = '';
+    showApp();
+    inventory = await response.json();
+    applyInventory();
+  } catch (error) {
+    signinError.textContent = 'Sign-in failed: ' + error.message;
+    signinError.classList.remove('hidden');
+  } finally {
+    signinSubmit.disabled = false;
+  }
+});
+signout.addEventListener('click', () => showSignin());
 filter.addEventListener('input',render);
 refresh.addEventListener('click',load);
-load();
+getHealth();
+showSignin();

@@ -28,6 +28,37 @@ ACCEPT = ", ".join((
 ))
 
 
+READ_HTPASSWD = "/run/registreasy/read.htpasswd"
+PUSH_HTPASSWD = "/run/registreasy/push.htpasswd"
+BASIC_RE = re.compile(r"Basic ([A-Za-z0-9+/=]{1,512})")
+
+
+def verify_basic(header, htpasswd):
+    """True when the Basic header matches a user in htpasswd (bcrypt via htpasswd -v).
+
+    The password goes through stdin, never argv, so it stays out of the process list.
+    """
+    import base64
+    import subprocess
+    match = BASIC_RE.fullmatch(header or "")
+    if not match:
+        return False
+    try:
+        user, password = base64.b64decode(match.group(1)).decode("utf-8").split(":", 1)
+    except (ValueError, UnicodeDecodeError):
+        return False
+    if not re.fullmatch(r"[a-zA-Z0-9._-]{1,64}", user) or not password:
+        return False
+    try:
+        result = subprocess.run(
+            ["htpasswd", "-v", "-i", htpasswd, user],
+            input=password + "\n", capture_output=True, text=True, timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return result.returncode == 0
+
+
 def stamp(seconds):
     if seconds is None:
         return None
@@ -260,17 +291,27 @@ class Handler(BaseHTTPRequestHandler):
     def as_json(self, status, value):
         self.respond(status, "application/json; charset=utf-8", json.dumps(value, separators=(",", ":")).encode())
 
-    def publish_role(self):
-        # nginx sets this per listener and overrides any client-sent value.
-        return self.headers.get("X-Registreasy-Role") == "publish"
+    def listener(self):
+        # nginx sets this per server block and overrides any client-sent value.
+        return self.headers.get("X-Registreasy-Listener")
+
+    def authorized(self, role):
+        """Credentials for the listener's role. The read listener also accepts
+        publisher credentials; when no read password exists, pulls are anonymous."""
+        if role == "read":
+            if not pathlib.Path(READ_HTPASSWD).exists():
+                return True
+            return verify_basic(self.headers.get("Authorization"), READ_HTPASSWD) or \
+                verify_basic(self.headers.get("Authorization"), PUSH_HTPASSWD)
+        return verify_basic(self.headers.get("Authorization"), PUSH_HTPASSWD)
 
     def do_POST(self):
         path = urllib.parse.urlsplit(self.path).path
-        if path != "/api/delete":
+        if path != "/api/delete" or self.listener() != "publish":
             self.as_json(404, {"error": "not_found"})
             return
-        if not self.publish_role():
-            self.as_json(403, {"error": "forbidden"})
+        if not self.authorized("publish"):
+            self.as_json(401, {"error": "unauthorized"})
             return
         # Browsers cannot send this header cross-site without a CORS preflight,
         # which we never allow, so cached Basic credentials cannot be abused.
@@ -304,9 +345,13 @@ class Handler(BaseHTTPRequestHandler):
             state = health()
             self.as_json(200 if state["status"] == "ok" else 503, state)
         elif path == "/api/inventory":
+            role = "publish" if self.listener() == "publish" else "read"
+            if not self.authorized(role):
+                self.as_json(401, {"error": "unauthorized"})
+                return
             try:
                 value = dict(cached_inventory())
-                value["can_delete"] = self.publish_role()
+                value["can_delete"] = role == "publish"
                 self.as_json(200, value)
             except (OSError, ValueError) as exc:
                 self.as_json(503, {"error": "inventory_unavailable", "message": str(exc)[:150]})
