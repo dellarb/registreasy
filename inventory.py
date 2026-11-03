@@ -40,6 +40,17 @@ def request(path, accept="application/json"):
         return json.load(response), response.headers
 
 
+def call(method, path, accept="application/json"):
+    req = urllib.request.Request(REGISTRY + path, method=method, headers={"Accept": accept})
+    with urllib.request.urlopen(req, timeout=10) as response:
+        return response.status, response.headers
+
+
+REPO_RE = re.compile(r"[a-z0-9]+(?:[._/-][a-z0-9]+)*")
+TAG_RE = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}")
+DIGEST_RE = re.compile(r"sha256:[a-f0-9]{64}")
+
+
 def paged(path, key):
     results = []
     last = None
@@ -133,6 +144,78 @@ def cached_inventory():
         return value
 
 
+def invalidate_cache():
+    with LOCK:
+        CACHE.update(at=0, data=None)
+
+
+def tag_digests(repo, tags):
+    encoded = urllib.parse.quote(repo, safe="/")
+    digests = {}
+    for tag in tags:
+        _, headers = call("HEAD", f"/v2/{encoded}/manifests/{urllib.parse.quote(tag, safe='')}", ACCEPT)
+        digest = headers.get("Docker-Content-Digest") or ""
+        if not DIGEST_RE.fullmatch(digest):
+            raise ValueError(f"could not resolve digest for {repo}:{tag}")
+        digests[tag] = digest
+    return digests
+
+
+def delete_images(body):
+    """Delete a tag (and every tag sharing its manifest) or a whole repository.
+
+    The registry removes manifests by digest, so a tag delete also removes any
+    other tags on the same digest. `preview` returns the plan without deleting.
+    Disk space is only reclaimed later by garbage collection.
+    """
+    repo = body.get("repo")
+    tag = body.get("tag")
+    preview = body.get("preview") is True
+    if not isinstance(repo, str) or not REPO_RE.fullmatch(repo):
+        raise ValueError("invalid repository name")
+    if tag is not None and (not isinstance(tag, str) or not TAG_RE.fullmatch(tag)):
+        raise ValueError("invalid tag")
+    encoded = urllib.parse.quote(repo, safe="/")
+    try:
+        tags = paged("/v2/" + encoded + "/tags/list", "tags")
+    except urllib.error.HTTPError as exc:
+        if exc.code == 404:
+            raise ValueError("repository not found")
+        raise
+    if not tags:
+        raise ValueError("repository has no tags")
+    digests = tag_digests(repo, tags)
+    if tag is not None:
+        if tag not in digests:
+            raise ValueError("tag not found")
+        target = digests[tag]
+        removed_tags = sorted(t for t, d in digests.items() if d == target)
+        remove_digests = [target]
+        scope = "tag"
+    else:
+        removed_tags = sorted(digests)
+        remove_digests = sorted(set(digests.values()))
+        scope = "repository"
+    result = {
+        "repository": repo,
+        "scope": scope,
+        "tag": tag,
+        "tags": removed_tags,
+        "digests": remove_digests,
+        "preview": preview,
+        "deleted": False,
+    }
+    if preview:
+        return result
+    for digest in remove_digests:
+        status, _ = call("DELETE", f"/v2/{encoded}/manifests/{digest}")
+        if status not in (200, 202):
+            raise ValueError(f"registry refused delete of {digest} (HTTP {status})")
+    result["deleted"] = True
+    invalidate_cache()
+    return result
+
+
 def health():
     upstream = False
     writable = False
@@ -177,6 +260,44 @@ class Handler(BaseHTTPRequestHandler):
     def as_json(self, status, value):
         self.respond(status, "application/json; charset=utf-8", json.dumps(value, separators=(",", ":")).encode())
 
+    def publish_role(self):
+        # nginx sets this per listener and overrides any client-sent value.
+        return self.headers.get("X-Registreasy-Role") == "publish"
+
+    def do_POST(self):
+        path = urllib.parse.urlsplit(self.path).path
+        if path != "/api/delete":
+            self.as_json(404, {"error": "not_found"})
+            return
+        if not self.publish_role():
+            self.as_json(403, {"error": "forbidden"})
+            return
+        # Browsers cannot send this header cross-site without a CORS preflight,
+        # which we never allow, so cached Basic credentials cannot be abused.
+        if self.headers.get("X-Registreasy-Action") != "delete":
+            self.as_json(403, {"error": "missing_action_header"})
+            return
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            length = 0
+        if not 0 < length <= 4096:
+            self.as_json(400, {"error": "bad_request", "message": "body must be 1-4096 bytes of JSON"})
+            return
+        try:
+            body = json.loads(self.rfile.read(length))
+            if not isinstance(body, dict):
+                raise ValueError("body must be a JSON object")
+        except ValueError as exc:
+            self.as_json(400, {"error": "bad_request", "message": str(exc)[:150]})
+            return
+        try:
+            self.as_json(200, delete_images(body))
+        except ValueError as exc:
+            self.as_json(400, {"error": "delete_refused", "message": str(exc)[:150]})
+        except OSError as exc:
+            self.as_json(503, {"error": "registry_unavailable", "message": str(exc)[:150]})
+
     def do_GET(self):
         path = urllib.parse.urlsplit(self.path).path
         if path == "/healthz":
@@ -184,7 +305,9 @@ class Handler(BaseHTTPRequestHandler):
             self.as_json(200 if state["status"] == "ok" else 503, state)
         elif path == "/api/inventory":
             try:
-                self.as_json(200, cached_inventory())
+                value = dict(cached_inventory())
+                value["can_delete"] = self.publish_role()
+                self.as_json(200, value)
             except (OSError, ValueError) as exc:
                 self.as_json(503, {"error": "inventory_unavailable", "message": str(exc)[:150]})
         elif path in ("/", "/index.html"):

@@ -104,13 +104,41 @@ When a version or tag changes: `docker compose pull && docker compose up -d`. Th
 
 If you set `PULL_PASSWORD`, first use `docker login registry.example.com -u pull` on the remote host. Credentials persist in Docker's local credential store or configuration.
 
+## Deleting images
+
+The publish endpoint serves the inventory page too: `https://registry-push.<host>/` (publisher login). Each repository has a **Delete repository** button, and each tag row has a **Delete** button. Both show a preview first (which tags and manifests will go) and ask for confirmation.
+
+Deleting a tag removes its manifest, so any other tag pointing at the same digest is removed too. The preview lists them.
+
+API (publisher login, required header `X-Registreasy-Action: delete`):
+
+```bash
+curl -u push:"$PUSH_PASSWORD" -H 'Content-Type: application/json' -H 'X-Registreasy-Action: delete' \
+  -d '{"repo":"tiller-router","tag":"latest","preview":true}' https://registry-push.<host>/api/delete
+```
+
+Omit `tag` to delete the whole repository. Use `"preview": true` to see the plan without deleting. Note the publish endpoint's `/api/delete` route is the only delete path; registry-level DELETE on `/v2/` also requires push login.
+
+**Disk space:** a delete frees nothing until garbage collection runs. Stop uploads first, then:
+
+```bash
+docker compose stop
+docker run --rm -v "$PWD/registry.yml:/etc/distribution/config.yml:ro" \
+  -v "$PWD/data/registry:/var/lib/registry" registry:3 \
+  garbage-collect --delete-untagged /etc/distribution/config.yml
+docker compose start
+```
+
+Run GC after deletes you care about; it is not automatic.
+
 ## Security
 
 - Both endpoints need trusted HTTPS when accessed from other machines. NPM should terminate TLS.
 - Only Nginx reaches the internal Registry v3 backend; direct backend access is blocked.
 - Read endpoint blocks all non-GET/HEAD methods, regardless of username.
 - The publishing endpoint challenges credentials at `GET /v2/`, which is required for reliable Docker CLI publishing.
-- Registry manifest deletion is disabled by default. No deletion controls or user-management UI are provided.
+- Deletion is available only on the publish endpoint, behind `PUSH_PASSWORD`. The read endpoint and the read-only inventory page never show delete controls, and its API rejects the delete route entirely.
+- Registry deletes remove manifest references only. Disk space is reclaimed by garbage collection (see below).
 - Without `PULL_PASSWORD`, images and tags are not confidential. Limit access through LAN/Tailscale/firewall rules if that matters.
 - Environment secrets are visible to host-level Docker administrators via container inspection. Keep `.env` private, and rotate passwords when needed.
 - Persistent image storage and the stable internal HTTP signing secret live in `./data`; back it up.
