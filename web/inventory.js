@@ -104,12 +104,12 @@ function render() {
       const thead = el('thead');
       const titles = el('tr');
       for (const title of ['Tag / version','Tag updated¹','Image built²','Digest']) titles.append(el('th','',title));
-      if (canDelete) titles.append(el('th','','')); 
+      if (canDelete) titles.append(el('th','actions',''));
       thead.append(titles); table.append(thead);
       const tbody = el('tbody');
       for (const tag of tags) {
         const row = el('tr');
-        const label = el('td'); label.append(el('span','tag',tag.tag)); row.append(label);
+        const label = el('td'); const pill = el('span','tag',tag.tag); pill.title = tag.tag; label.append(pill); row.append(label);
         row.append(el('td',tag.tag_updated_at?'':'missing',formatted(tag.tag_updated_at)));
         row.append(el('td',tag.built_at?'':'missing',formatted(tag.built_at)));
         const digestCell = el('td');
@@ -117,7 +117,7 @@ function render() {
         if (tag.digest) digest.title = tag.digest;
         digestCell.append(digest); row.append(digestCell);
         if (canDelete) {
-          const cell = el('td');
+          const cell = el('td','actions');
           cell.append(button('Delete', 'danger small', () => deleteFlow(repo.name, tag.tag)));
           row.append(cell);
         }
