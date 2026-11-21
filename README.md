@@ -1,5 +1,8 @@
 # Registreasy
 
+> [!WARNING]
+> **IN DEVELOPMENT** — Registreasy is still under active development. Configuration, behaviour, endpoints and defaults may change without notice, and breaking changes are possible between commits. Do not rely on it for production workloads without testing, and review the changelog/history before upgrading.
+
 A **single-container Docker registry** powered by upstream CNCF Distribution v3 and Nginx. Built for simple self-hosted image publishing: one port, one read-only account and one publisher account.
 
 - One container, one port, one `./data` persistence directory, no external database
