@@ -306,12 +306,15 @@ def tag_metadata(repo, tag):
     manifest, headers = request(f"/v2/{encoded}/manifests/{urllib.parse.quote(tag, safe='')}", ACCEPT)
     digest = headers.get("Docker-Content-Digest")
     media_type = manifest.get("mediaType")
+    platform = None
     if "manifests" in manifest:
         choices = manifest.get("manifests") or []
         choice = next((v for v in choices if v.get("platform", {}).get("os") == "linux" and v.get("platform", {}).get("architecture") == "amd64"), None)
         choice = choice or next((v for v in choices if v.get("platform", {}).get("os") == "linux"), None)
         choice = choice or (choices[0] if choices else None)
         if choice:
+            platform = choice.get("platform") or {}
+            platform = "/".join(str(platform[key]) for key in ("os", "architecture", "variant") if platform.get(key)) or None
             manifest, _ = request(f"/v2/{encoded}/manifests/{urllib.parse.quote(choice['digest'], safe=':')}", ACCEPT)
     created = (manifest.get("annotations") or {}).get("org.opencontainers.image.created")
     config = manifest.get("config")
@@ -321,11 +324,16 @@ def tag_metadata(repo, tag):
             created = config_data.get("created") or created
         except (OSError, ValueError):
             pass
-    return {"digest": digest, "media_type": media_type, "built_at": created}
+    layers = manifest.get("layers")
+    descriptors = [config, *layers] if isinstance(layers, list) else []
+    size = sum(d["size"] for d in descriptors) if descriptors and all(
+        isinstance(d, dict) and type(d.get("size")) is int and d["size"] >= 0 for d in descriptors
+    ) else None
+    return {"digest": digest, "media_type": media_type, "built_at": created, "size_bytes": size, "platform": platform}
 
 
 def tag_entry(repo, tag):
-    metadata = {"digest": None, "media_type": None, "built_at": None}
+    metadata = {"digest": None, "media_type": None, "built_at": None, "size_bytes": None, "platform": None}
     try:
         metadata = tag_metadata(repo, tag)
     except (OSError, ValueError, KeyError, TypeError, AttributeError):

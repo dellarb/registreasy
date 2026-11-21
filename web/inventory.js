@@ -83,6 +83,28 @@ function button(label, className, onClick) {
   b.addEventListener('click', onClick);
   return b;
 }
+function imageGroups(tags) {
+  const groups = [];
+  const byDigest = new Map();
+  for (const tag of tags) {
+    let group = tag.digest && byDigest.get(tag.digest);
+    if (!group) {
+      group = [];
+      groups.push(group);
+      if (tag.digest) byDigest.set(tag.digest, group);
+    }
+    group.push(tag);
+  }
+  return groups;
+}
+function sizeLabel(bytes) {
+  if (!Number.isSafeInteger(bytes) || bytes < 0) return 'Unavailable';
+  if (bytes < 1024) return bytes + ' B';
+  const units = ['KiB', 'MiB', 'GiB', 'TiB'];
+  let unit = -1;
+  do { bytes /= 1024; unit++; } while (bytes >= 1024 && unit < units.length - 1);
+  return bytes.toFixed(1) + ' ' + units[unit];
+}
 function render() {
   list.replaceChildren();
   if (!inventory) return;
@@ -91,8 +113,9 @@ function render() {
   let shown = 0;
   for (const repo of inventory.repositories) {
     const match = repo.name.toLowerCase().includes(search);
-    const tags = match ? repo.tags : repo.tags.filter(tag => tag.tag.toLowerCase().includes(search));
-    if (!match && !tags.length) continue;
+    const groups = imageGroups(repo.tags).filter(group => match || group.some(tag => tag.tag.toLowerCase().includes(search)));
+    if (!match && !groups.length) continue;
+    const tags = groups.flat();
     shown++;
     const card = el('article', 'repo');
     const head = el('div','repo-head');
@@ -106,15 +129,21 @@ function render() {
       const table = el('table');
       const thead = el('thead');
       const titles = el('tr');
-      for (const title of ['Tag / version','Tag updated¹','Image built²','Digest']) titles.append(el('th','',title));
+      for (const title of ['Tag / version','Tag updated¹','Image built²','Size³','Digest']) titles.append(el('th','',title));
       if (canDelete) titles.append(el('th','actions',''));
       thead.append(titles); table.append(thead);
       const tbody = el('tbody');
-      for (const tag of tags) {
+      for (const group of groups) {
+        const tag = group[0];
         const row = el('tr');
-        const label = el('td'); const pill = el('span','tag',tag.tag); pill.title = tag.tag; label.append(pill); row.append(label);
+        const label = el('td');
+        for (const item of group) { const pill = el('span','tag',item.tag); pill.title = item.tag; label.append(pill); }
+        row.append(label);
         row.append(el('td',tag.tag_updated_at?'':'missing',formatted(tag.tag_updated_at)));
         row.append(el('td',tag.built_at?'':'missing',formatted(tag.built_at)));
+        const size = el('td', tag.size_bytes == null ? 'missing' : '', sizeLabel(tag.size_bytes));
+        if (tag.platform) size.append(el('small', 'platform', tag.platform));
+        row.append(size);
         const digestCell = el('td');
         const digest = el('code','',tag.digest ? tag.digest.slice(0,23) + '…' : 'Unavailable');
         if (tag.digest) digest.title = tag.digest;

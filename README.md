@@ -41,7 +41,7 @@ The exact network name depends on your Docker Compose project name (check `docke
 
 ## Inventory and health
 
-Browse the **root URL**, for example `https://registry.example.com/`, to see the inventory. The page shows a sign-in form: enter either account's username and password. The pull account gets a read-only view; the publisher account also gets delete controls. It groups image repositories and displays tags, manifest digests, image build dates (where present in OCI/Docker config) and approximate tag update dates. It includes a repository/tag filter and health status. Signing in creates a server-side session (see **Sign-in and sessions** below); the page never stores your password, and reloading keeps you signed in.
+Browse the **root URL**, for example `https://registry.example.com/`, to see the inventory. The page shows a sign-in form: enter either account's username and password. The pull account gets a read-only view; the publisher account also gets delete controls. It groups tags by manifest digest and displays image sizes, build dates (where present in OCI/Docker config) and approximate tag update dates. Image size is the sum of compressed layers and config for the selected platform, not extracted or unique disk usage. It includes a repository/tag filter and health status. Signing in creates a server-side session (see **Sign-in and sessions** below); the page never stores your password, and reloading keeps you signed in.
 
 | Route | Behaviour |
 | --- | --- |
