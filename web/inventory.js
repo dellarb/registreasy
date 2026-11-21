@@ -138,14 +138,14 @@ function render() {
         const row = el('tr');
         const label = el('td');
         const latest = group.find(item => item.tag === 'latest');
-        const revision = latest && group.find(item => /^rev-[a-f0-9]{7,}$/i.test(item.tag));
+        const revision = group.find(item => /^rev-[a-f0-9]{7,}/i.test(item.tag));
         const displayed = latest && revision
           ? [latest, revision, ...group.filter(item => item !== latest && item !== revision)]
           : group;
         for (const item of displayed) {
-          const pill = el('span', item === revision ? 'tag-sha' : 'tag', item.tag);
-          pill.title = item.tag;
-          label.append(pill);
+          const tagLabel = el('span', /^rev-[a-f0-9]{7,}/i.test(item.tag) ? 'tag-sha' : 'tag', item.tag);
+          tagLabel.title = item.tag;
+          label.append(tagLabel);
         }
         row.append(label);
         row.append(el('td',tag.tag_updated_at?'':'missing',formatted(tag.tag_updated_at)));
