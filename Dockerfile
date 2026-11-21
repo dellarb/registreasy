@@ -8,6 +8,7 @@ COPY --from=distribution /bin/registry /usr/local/bin/registry
 COPY registry.yml /etc/distribution/config.yml
 COPY nginx.conf /etc/nginx/nginx.conf
 COPY registry-proxy.conf /etc/nginx/registry-proxy.conf
+COPY app-proxy.conf /etc/nginx/app-proxy.conf
 COPY entrypoint.sh /usr/local/bin/registreasy-entrypoint
 COPY inventory.py /opt/registreasy/inventory.py
 COPY web/ /opt/registreasy/web/

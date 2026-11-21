@@ -4,8 +4,9 @@ const notice = document.querySelector('#notice');
 const filter = document.querySelector('#filter');
 const refresh = document.querySelector('#refresh');
 let inventory = null;
-// Session lives only in this page's memory: reloading or signing out clears it.
-let session = null; // { user, auth: 'Basic …' }
+// The server holds the session; the browser only has an HttpOnly cookie this
+// script cannot read. The password is sent once, to sign in, and never stored.
+let session = null; // { username, role } from /api/session
 const signin = document.querySelector('#signin');
 const app = document.querySelector('#app');
 const signout = document.querySelector('#signout');
@@ -25,23 +26,25 @@ function el(name, className, value) {
   if (value !== undefined) item.textContent = value;
   return item;
 }
-async function callDelete(body) {
-  const response = await fetch('/api/delete', {
-    method: 'POST', cache: 'no-store', credentials: 'omit',
-    headers: { 'Content-Type': 'application/json', 'X-Registreasy-Action': 'delete', Authorization: session.auth },
-    body: JSON.stringify(body),
+// Every API call sends the session cookie (same origin only). State-changing
+// calls add X-Registreasy-Action, which a cross-site page cannot send.
+function api(path, method, action, body) {
+  const headers = {};
+  if (action) headers['X-Registreasy-Action'] = action;
+  if (body !== undefined) headers['Content-Type'] = 'application/json';
+  return fetch(path, {
+    method: method || 'GET', cache: 'no-store', credentials: 'same-origin', headers,
+    body: body === undefined ? undefined : JSON.stringify(body),
   });
+}
+const EXPIRED = 'Your session has expired. Please sign in again.';
+async function callDelete(body) {
+  const response = await api('/api/delete', 'POST', 'delete', body);
   const payload = await response.json().catch(() => ({}));
+  if (response.status === 401) { showSignin(EXPIRED); throw Error('signed out'); }
   if (response.status === 429) throw Error('Too many requests; wait a few seconds and try again.');
   if (!response.ok) throw Error(payload.message || payload.error || ('HTTP ' + response.status));
   return payload;
-}
-// btoa() only accepts Latin-1; encode the credentials as UTF-8 first.
-function basicAuth(user, password) {
-  const bytes = new TextEncoder().encode(user + ':' + password);
-  let binary = '';
-  for (const b of bytes) binary += String.fromCharCode(b);
-  return 'Basic ' + btoa(binary);
 }
 function showNotice(message, isError) {
   notice.textContent = message;
@@ -71,7 +74,7 @@ async function deleteFlow(repo, tag) {
     await load();
     if (session && inventory) showNotice('Deleted ' + (done.scope === 'repository' ? done.repository : done.repository + ':' + done.tag) + '.', false);
   } catch (error) {
-    showNotice('Delete failed: ' + error.message, true);
+    if (session) showNotice('Delete failed: ' + error.message, true);
   }
 }
 function button(label, className, onClick) {
@@ -155,8 +158,8 @@ async function load() {
   notice.textContent='Loading inventory…';
   notice.classList.remove('hidden','error');
   try {
-    const response = await fetch('/api/inventory',{cache:'no-store', credentials:'omit', headers: {Authorization: session.auth}});
-    if (response.status === 401) { showSignin('That password was not accepted for ' + session.user + '.'); return; }
+    const response = await api('/api/inventory');
+    if (response.status === 401) { showSignin(EXPIRED); return; }
     if (response.status === 429) throw Error('Too many requests; wait a few seconds and refresh.');
     if (!response.ok) throw Error('Inventory unavailable (HTTP '+response.status+')');
     inventory=await response.json();
@@ -186,7 +189,7 @@ function showApp() {
   signin.classList.add('hidden');
   app.classList.remove('hidden');
   signout.classList.remove('hidden');
-  document.querySelector('#app-sub').textContent = inventory && inventory.can_delete
+  document.querySelector('#app-sub').textContent = session && session.can_delete
     ? 'Publisher access: you can delete tags and repositories.'
     : 'Read-only access: browse and pull images.';
 }
@@ -195,25 +198,23 @@ signinForm.addEventListener('submit', async event => {
   const pw = document.querySelector('#password').value;
   const user = document.querySelector('#username').value.trim();
   if (!pw || !user) return;
-  // Passwords ride only in the Authorization header of this request's session.
-  const candidate = { user, auth: basicAuth(user, pw) };
   signinSubmit.disabled = true;
   signinError.classList.add('hidden');
   try {
-    const response = await fetch('/api/inventory', {cache:'no-store', credentials:'omit', headers:{Authorization: candidate.auth}});
+    const response = await api('/api/session', 'POST', 'signin', { username: user, password: pw });
+    document.querySelector('#password').value = '';
     if (response.status === 401) {
-      signinError.textContent = 'That password was not accepted.';
+      signinError.textContent = 'That username or password was not accepted.';
       signinError.classList.remove('hidden');
-      document.querySelector('#password').select();
+      document.querySelector('#password').focus();
       return;
     }
-    if (response.status === 429) throw Error('too many attempts; wait a few seconds and try again');
-    if (!response.ok) throw Error('HTTP ' + response.status);
-    inventory = await response.json();
-    session = candidate;
-    document.querySelector('#password').value = '';
+    if (response.status === 429) throw Error('too many attempts; wait a while and try again');
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) throw Error(payload.message || ('HTTP ' + response.status));
+    session = payload;
     showApp();
-    applyInventory();
+    await load();
   } catch (error) {
     signinError.textContent = 'Sign-in failed: ' + error.message;
     signinError.classList.remove('hidden');
@@ -221,8 +222,19 @@ signinForm.addEventListener('submit', async event => {
     signinSubmit.disabled = false;
   }
 });
-signout.addEventListener('click', () => showSignin());
+signout.addEventListener('click', async () => {
+  try { await api('/api/session', 'DELETE', 'signout'); } catch { /* signed out locally regardless */ }
+  showSignin();
+});
 filter.addEventListener('input',render);
 refresh.addEventListener('click',load);
-getHealth();
-showSignin();
+// Resume an existing session (e.g. after a reload) without asking again.
+async function start() {
+  getHealth();
+  try {
+    const response = await api('/api/session');
+    if (response.ok) { session = await response.json(); showApp(); await load(); return; }
+  } catch { /* fall through to the sign-in form */ }
+  showSignin();
+}
+start();

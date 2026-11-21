@@ -12,5 +12,9 @@ services:
       PUSH_PASSWORD: ${PUSH_PASSWORD:?PUSH_PASSWORD must be set in .env}
       PULL_USERNAME: ${PULL_USERNAME:-pull}
       PULL_PASSWORD: ${PULL_PASSWORD:?PULL_PASSWORD must be set in .env}
+      # Set to 1 when exposed to the internet (see README, "Exposing publicly").
+      REQUIRE_HTTPS: ${REQUIRE_HTTPS:-0}
+      SESSION_IDLE_SECONDS: ${SESSION_IDLE_SECONDS:-1800}
+      SESSION_MAX_SECONDS: ${SESSION_MAX_SECONDS:-43200}
     volumes:
       - ./data:/data

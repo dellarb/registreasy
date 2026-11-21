@@ -7,6 +7,7 @@ import os
 import pathlib
 import re
 import shutil
+import sys
 import threading
 import time
 import urllib.error
@@ -37,21 +38,31 @@ PUSH_HTPASSWD = "/run/registreasy/push.htpasswd"
 BASIC_RE = re.compile(r"Basic ([A-Za-z0-9+/=]{1,512})")
 
 
-def verify_basic(header, htpasswd):
-    """True when the Basic header matches a user in htpasswd (bcrypt via htpasswd -v).
+USER_RE = re.compile(r"[a-zA-Z0-9._-]{1,64}")
+
+
+def parse_basic(header):
+    """(user, password) from a Basic Authorization header, or None."""
+    import base64
+    match = BASIC_RE.fullmatch(header or "")
+    if not match:
+        return None
+    try:
+        user, password = base64.b64decode(match.group(1), validate=True).decode("utf-8").split(":", 1)
+    except (ValueError, UnicodeDecodeError):
+        return None
+    return user, password
+
+
+def verify_password(user, password, htpasswd):
+    """True when user/password matches htpasswd (bcrypt via htpasswd -v).
 
     The password goes through stdin, never argv, so it stays out of the process list.
     """
-    import base64
     import subprocess
-    match = BASIC_RE.fullmatch(header or "")
-    if not match:
+    if not isinstance(user, str) or not isinstance(password, str):
         return False
-    try:
-        user, password = base64.b64decode(match.group(1)).decode("utf-8").split(":", 1)
-    except (ValueError, UnicodeDecodeError):
-        return False
-    if not re.fullmatch(r"[a-zA-Z0-9._-]{1,64}", user) or not password:
+    if not USER_RE.fullmatch(user) or not password or len(password) > 1024 or "\n" in password:
         return False
     try:
         result = subprocess.run(
@@ -61,6 +72,170 @@ def verify_basic(header, htpasswd):
     except (OSError, subprocess.SubprocessError):
         return False
     return result.returncode == 0
+
+
+def role_for(user, password):
+    """'push', 'pull' or None for a username/password pair."""
+    if verify_password(user, password, PUSH_HTPASSWD):
+        return "push"
+    if verify_password(user, password, USERS_HTPASSWD):
+        return "pull"
+    return None
+
+
+# --- Browser sessions -------------------------------------------------------
+# Sessions live in memory: a restart signs everyone out, and since passwords
+# only change on restart, a password change always ends every session.
+# Only sha256(token) is stored, so a memory dump cannot be replayed as a cookie.
+
+def env_int(name, default, low, high):
+    try:
+        value = int(os.environ.get(name, default))
+    except ValueError:
+        value = default
+    return max(low, min(high, value))
+
+
+SESSION_IDLE_SECONDS = env_int("SESSION_IDLE_SECONDS", 1800, 1, 7 * 86400)
+SESSION_MAX_SECONDS = env_int("SESSION_MAX_SECONDS", 43200, 1, 30 * 86400)
+SESSION_LIMIT = env_int("SESSION_LIMIT", 1000, 1, 100000)
+SECURE_COOKIE = "__Host-registreasy_session"
+PLAIN_COOKIE = "registreasy_session"
+TOKEN_RE = re.compile(r"[A-Za-z0-9_-]{43}")
+
+
+def now():
+    return time.time()
+
+
+def digest_token(token):
+    return hashlib.sha256(token.encode()).hexdigest()
+
+
+class SessionStore:
+    def __init__(self, idle=SESSION_IDLE_SECONDS, maximum=SESSION_MAX_SECONDS, limit=SESSION_LIMIT):
+        self.idle, self.maximum, self.limit = idle, maximum, limit
+        self.items = {}
+        self.lock = threading.Lock()
+
+    def _expired(self, item, at):
+        return at - item["last_seen"] >= self.idle or at - item["created"] >= self.maximum
+
+    def _sweep(self, at):
+        for key in [k for k, v in self.items.items() if self._expired(v, at)]:
+            del self.items[key]
+
+    def create(self, user, role):
+        import secrets
+        token = secrets.token_urlsafe(32)
+        at = now()
+        with self.lock:
+            self._sweep(at)
+            while len(self.items) >= self.limit:
+                oldest = min(self.items, key=lambda k: self.items[k]["last_seen"])
+                del self.items[oldest]
+            self.items[digest_token(token)] = {"user": user, "role": role, "created": at, "last_seen": at}
+        return token
+
+    def get(self, token):
+        """The session for token (refreshing its idle timer), or None."""
+        if not isinstance(token, str) or not TOKEN_RE.fullmatch(token):
+            return None
+        key = digest_token(token)
+        at = now()
+        with self.lock:
+            item = self.items.get(key)
+            if item is None:
+                return None
+            if self._expired(item, at):
+                del self.items[key]
+                return None
+            item["last_seen"] = at
+            return dict(item, idle_expires_at=min(at + self.idle, item["created"] + self.maximum),
+                        expires_at=item["created"] + self.maximum)
+
+    def delete(self, token):
+        if isinstance(token, str) and TOKEN_RE.fullmatch(token):
+            with self.lock:
+                self.items.pop(digest_token(token), None)
+
+
+# --- Password-guessing backoff ----------------------------------------------
+# nginx rate limits per client; this additionally locks out a client address
+# after repeated failures. A per-username lock applies only to public clients,
+# so an internet attacker can never lock LAN users out of their own registry.
+
+FAIL_WINDOW = 900
+FAIL_LIMIT_CLIENT = 10
+FAIL_LIMIT_USER = 30
+
+
+class Throttle:
+    def __init__(self, window=FAIL_WINDOW, per_client=FAIL_LIMIT_CLIENT, per_user=FAIL_LIMIT_USER):
+        self.window, self.per_client, self.per_user = window, per_client, per_user
+        self.failures = {}
+        self.lock = threading.Lock()
+
+    def _recent(self, key, at):
+        stamps = [t for t in self.failures.get(key, ()) if at - t < self.window]
+        if stamps:
+            self.failures[key] = stamps
+        else:
+            self.failures.pop(key, None)
+        return stamps
+
+    def _keys(self, client, user, private):
+        keys = [("client", client, self.per_client)]
+        if not private and isinstance(user, str) and USER_RE.fullmatch(user):
+            keys.append(("user", user.lower(), self.per_user))
+        return keys
+
+    def retry_after(self, client, user, private):
+        """Seconds until another attempt is allowed (0 = allowed now)."""
+        at = now()
+        wait = 0
+        with self.lock:
+            for kind, value, limit in self._keys(client, user, private):
+                stamps = self._recent((kind, value), at)
+                if len(stamps) >= limit:
+                    wait = max(wait, int(stamps[-limit] + self.window - at) + 1)
+        return wait
+
+    def fail(self, client, user, private):
+        at = now()
+        with self.lock:
+            if len(self.failures) > 20000:
+                for key in list(self.failures):
+                    self._recent(key, at)
+            for kind, value, limit in self._keys(client, user, private):
+                stamps = self._recent((kind, value), at)
+                stamps.append(at)
+                self.failures[(kind, value)] = stamps[-limit:]
+
+
+SESSIONS = SessionStore()
+THROTTLE = Throttle()
+SECRET_QUERY_RE = re.compile(r"(^|&)(password|passwd|pass|pw|token|auth|authorization|session|secret)=", re.I)
+
+
+def same_host(origin, host):
+    """True when an Origin header names this host (scheme ignored; ports compared)."""
+    if not origin or not host:
+        return False
+    parsed = urllib.parse.urlsplit(origin)
+    if parsed.scheme not in ("http", "https") or not parsed.hostname:
+        return False
+    default = 443 if parsed.scheme == "https" else 80
+    origin_host = parsed.hostname.lower(), parsed.port or default
+    target = urllib.parse.urlsplit("//" + host)
+    if not target.hostname:
+        return False
+    return origin_host == (target.hostname.lower(), target.port or default)
+
+
+def log_auth_failure(client, user):
+    shown = user if isinstance(user, str) and USER_RE.fullmatch(user) else "<invalid>"
+    print(f"registreasy: authentication failed client={client} user={shown}", file=sys.stderr, flush=True)
 
 
 def stamp(seconds):
@@ -351,59 +526,217 @@ def health():
 
 class Handler(BaseHTTPRequestHandler):
     server_version = "Registreasy/1.0"
+    sys_version = ""
 
-    def respond(self, status, mime, payload):
+    # --- request context (set by nginx; the app only listens on loopback) ---
+    # nginx overwrites these headers on every proxied request, so clients cannot
+    # inject them. They carry the real client address and transport scheme.
+
+    def scheme(self):
+        return "https" if self.headers.get("X-Registreasy-Scheme") == "https" else "http"
+
+    def client(self):
+        return (self.headers.get("X-Registreasy-Client") or self.client_address[0])[:64]
+
+    def client_private(self):
+        return self.headers.get("X-Registreasy-Private") == "1"
+
+    def cookie_name(self):
+        return SECURE_COOKIE if self.scheme() == "https" else PLAIN_COOKIE
+
+    def cookie_token(self):
+        from http.cookies import CookieError, SimpleCookie
+        jar = SimpleCookie()
+        try:
+            jar.load(self.headers.get("Cookie") or "")
+        except CookieError:
+            return None
+        morsel = jar.get(self.cookie_name())
+        return morsel.value if morsel else None
+
+    def cookie_header(self, token, clear=False):
+        parts = [f"{self.cookie_name()}={'' if clear else token}", "Path=/", "HttpOnly", "SameSite=Strict"]
+        if self.scheme() == "https":
+            parts.append("Secure")
+        if clear:
+            parts.append("Max-Age=0")
+        return "; ".join(parts)
+
+    # --- responses ---
+
+    def respond(self, status, mime, payload, extra=()):
         self.send_response(status)
         self.send_header("Content-Type", mime)
         self.send_header("Content-Length", str(len(payload)))
         self.send_header("Cache-Control", "no-store")
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("X-Frame-Options", "DENY")
-        self.send_header("Content-Security-Policy", "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self'; base-uri 'none'; frame-ancestors 'none'")
+        self.send_header("Referrer-Policy", "no-referrer")
+        self.send_header("Cross-Origin-Opener-Policy", "same-origin")
+        self.send_header("Cross-Origin-Resource-Policy", "same-origin")
+        self.send_header("Content-Security-Policy", "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'")
+        if self.scheme() == "https":
+            self.send_header("Strict-Transport-Security", "max-age=31536000")
+        for name, value in extra:
+            self.send_header(name, value)
         self.end_headers()
-        self.wfile.write(payload)
+        if self.command != "HEAD":
+            self.wfile.write(payload)
 
-    def as_json(self, status, value):
-        self.respond(status, "application/json; charset=utf-8", json.dumps(value, separators=(",", ":")).encode())
+    def as_json(self, status, value, extra=()):
+        self.respond(status, "application/json; charset=utf-8", json.dumps(value, separators=(",", ":")).encode(), extra)
 
-    def role(self):
-        """'push' for publisher credentials, 'pull' for the read-only account,
-        None otherwise. The account, not the port, decides what is allowed."""
+    def log_message(self, fmt, *args):
+        # The request line never carries secrets (query secrets are refused), but
+        # keep access logging to nginx, which already records every request.
+        pass
+
+    # --- authentication ---
+
+    def check_password(self, user, password):
+        """role, or None; applies failure backoff. Returns ('locked', seconds) when throttled."""
+        client, private = self.client(), self.client_private()
+        wait = THROTTLE.retry_after(client, user, private)
+        if wait:
+            return ("locked", wait)
+        role = role_for(user, password)
+        if role is None:
+            THROTTLE.fail(client, user, private)
+            log_auth_failure(client, user)
+        return role
+
+    def authenticate(self):
+        """(principal, error_response). principal = {user, role, via}."""
+        token = self.cookie_token()
+        if token:
+            item = SESSIONS.get(token)
+            if item:
+                return {"user": item["user"], "role": item["role"], "via": "session", "session": item}, None
         header = self.headers.get("Authorization")
-        if verify_basic(header, PUSH_HTPASSWD):
-            return "push"
-        if verify_basic(header, USERS_HTPASSWD):
-            return "pull"
+        if header:
+            pair = parse_basic(header)
+            role = self.check_password(*pair) if pair else None
+            if isinstance(role, tuple):
+                return None, (429, {"error": "too_many_failures", "message": "too many failed sign-ins; try again later"},
+                              [("Retry-After", str(role[1]))])
+            if role:
+                return {"user": pair[0], "role": role, "via": "basic"}, None
+        return None, (401, {"error": "unauthorized"}, [])
+
+    def require_action(self, action, need_origin):
+        """CSRF guard for state-changing requests. Returns an error tuple or None.
+
+        A custom header cannot be sent cross-site without a CORS preflight, which
+        is never granted. Browser requests must also come from this host's Origin.
+        """
+        if self.headers.get("X-Registreasy-Action") != action:
+            return 403, {"error": "missing_action_header", "message": f"send X-Registreasy-Action: {action}"}
+        origin = self.headers.get("Origin")
+        if origin is None and not need_origin:
+            return None
+        if not same_host(origin, self.headers.get("Host")):
+            return 403, {"error": "bad_origin", "message": "request origin does not match this host"}
         return None
 
-    def do_POST(self):
-        path = urllib.parse.urlsplit(self.path).path
-        if path != "/api/delete":
-            self.as_json(404, {"error": "not_found"})
-            return
-        role = self.role()
-        if role is None:
-            self.as_json(401, {"error": "unauthorized"})
-            return
-        if role != "push":
-            self.as_json(403, {"error": "forbidden", "message": "only the publisher account can delete"})
-            return
-        # Browsers cannot send this header cross-site without a CORS preflight,
-        # which we never allow, so cached Basic credentials cannot be abused.
-        if self.headers.get("X-Registreasy-Action") != "delete":
-            self.as_json(403, {"error": "missing_action_header"})
-            return
+    def read_json(self):
+        if (self.headers.get("Content-Type") or "").split(";")[0].strip().lower() != "application/json":
+            raise ValueError("Content-Type must be application/json")
         try:
             length = int(self.headers.get("Content-Length") or 0)
         except ValueError:
             length = 0
         if not 0 < length <= 4096:
-            self.as_json(400, {"error": "bad_request", "message": "body must be 1-4096 bytes of JSON"})
+            raise ValueError("body must be 1-4096 bytes of JSON")
+        body = json.loads(self.rfile.read(length))
+        if not isinstance(body, dict):
+            raise ValueError("body must be a JSON object")
+        return body
+
+    def secret_in_query(self):
+        query = urllib.parse.urlsplit(self.path).query
+        if query and SECRET_QUERY_RE.search(query):
+            self.as_json(400, {"error": "secret_in_url", "message": "credentials are never accepted in the URL; use the Authorization header or the sign-in form"})
+            return True
+        return False
+
+    def session_view(self, principal):
+        item = principal.get("session")
+        return {
+            "username": principal["user"],
+            "role": principal["role"],
+            "can_delete": principal["role"] == "push",
+            "idle_expires_at": stamp(item["idle_expires_at"]) if item else None,
+            "expires_at": stamp(item["expires_at"]) if item else None,
+        }
+
+    # --- routes ---
+
+    def sign_in(self):
+        error = self.require_action("signin", need_origin=True)
+        if error:
+            self.as_json(*error)
             return
         try:
-            body = json.loads(self.rfile.read(length))
-            if not isinstance(body, dict):
-                raise ValueError("body must be a JSON object")
+            body = self.read_json()
+        except ValueError as exc:
+            self.as_json(400, {"error": "bad_request", "message": str(exc)[:150]})
+            return
+        user, password = body.get("username"), body.get("password")
+        role = self.check_password(user, password) if isinstance(user, str) and isinstance(password, str) else None
+        if isinstance(role, tuple):
+            self.as_json(429, {"error": "too_many_failures", "message": "too many failed sign-ins; try again later"},
+                         [("Retry-After", str(role[1]))])
+            return
+        if role is None:
+            self.as_json(401, {"error": "unauthorized", "message": "username or password not accepted"})
+            return
+        # Always a fresh token (no session fixation); an old cookie is replaced.
+        SESSIONS.delete(self.cookie_token())
+        token = SESSIONS.create(user, role)
+        item = SESSIONS.get(token)
+        principal = {"user": user, "role": role, "session": item}
+        self.as_json(200, self.session_view(principal), [("Set-Cookie", self.cookie_header(token))])
+
+    def sign_out(self):
+        error = self.require_action("signout", need_origin=True)
+        if error:
+            self.as_json(*error)
+            return
+        SESSIONS.delete(self.cookie_token())
+        self.as_json(200, {"signed_out": True}, [("Set-Cookie", self.cookie_header("", clear=True))])
+
+    def do_DELETE(self):
+        if self.secret_in_query():
+            return
+        if urllib.parse.urlsplit(self.path).path == "/api/session":
+            self.sign_out()
+        else:
+            self.as_json(404, {"error": "not_found"})
+
+    def do_POST(self):
+        if self.secret_in_query():
+            return
+        path = urllib.parse.urlsplit(self.path).path
+        if path == "/api/session":
+            self.sign_in()
+            return
+        if path != "/api/delete":
+            self.as_json(404, {"error": "not_found"})
+            return
+        principal, error = self.authenticate()
+        if error:
+            self.as_json(*error)
+            return
+        if principal["role"] != "push":
+            self.as_json(403, {"error": "forbidden", "message": "only the publisher account can delete"})
+            return
+        # Cookie sessions must prove same-origin; Basic-auth scripts need only the header.
+        error = self.require_action("delete", need_origin=principal["via"] == "session")
+        if error:
+            self.as_json(*error)
+            return
+        try:
+            body = self.read_json()
         except ValueError as exc:
             self.as_json(400, {"error": "bad_request", "message": str(exc)[:150]})
             return
@@ -418,17 +751,25 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         path = urllib.parse.urlsplit(self.path).path
+        if path.startswith("/api/") and self.secret_in_query():
+            return
         if path == "/healthz":
             state = health()
             self.as_json(200 if state["status"] == "ok" else 503, state)
+        elif path == "/api/session":
+            principal, error = self.authenticate()
+            if error:
+                self.as_json(*error)
+                return
+            self.as_json(200, self.session_view(principal))
         elif path == "/api/inventory":
-            role = self.role()
-            if role is None:
-                self.as_json(401, {"error": "unauthorized"})
+            principal, error = self.authenticate()
+            if error:
+                self.as_json(*error)
                 return
             try:
                 value = dict(cached_inventory())
-                value["can_delete"] = role == "push"
+                value["can_delete"] = principal["role"] == "push"
                 self.as_json(200, value)
             except (OSError, ValueError) as exc:
                 self.as_json(503, {"error": "inventory_unavailable", "message": str(exc)[:150]})

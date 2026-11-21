@@ -10,6 +10,11 @@ for var in PUSH_PASSWORD PULL_PASSWORD; do
 done
 PUSH_USERNAME="${PUSH_USERNAME:-push}"
 PULL_USERNAME="${PULL_USERNAME:-pull}"
+case "${REQUIRE_HTTPS:-0}" in
+    1|true|yes) REQUIRE_HTTPS=1 ;;
+    0|false|no|"") REQUIRE_HTTPS=0 ;;
+    *) echo "ERROR: REQUIRE_HTTPS must be 0 or 1" >&2; exit 1 ;;
+esac
 
 for username in "$PUSH_USERNAME" "$PULL_USERNAME"; do
     if [[ ! "$username" =~ ^[a-zA-Z0-9._-]+$ ]]; then
@@ -45,6 +50,10 @@ map \$remote_user \$registreasy_role {
     default other;
     ""      anon;
     "$PUSH_USERNAME" push;
+}
+# REQUIRE_HTTPS=1 refuses plain HTTP even from private (LAN) addresses.
+map \$server_port \$registreasy_require_https {
+    default $REQUIRE_HTTPS;
 }
 NGINX_USERS
 chmod 0644 /etc/nginx/registreasy-users.conf
