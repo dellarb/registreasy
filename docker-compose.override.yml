@@ -1,7 +1,0 @@
-# Local deployment overlay (not part of the upstream repo).
-# Joins the agentbox Caddy network so the HTTPS front can reach the
-# endpoint by container name.
-networks:
-  default:
-    name: agentbox_default
-    external: true
