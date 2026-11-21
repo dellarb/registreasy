@@ -7,8 +7,8 @@ storage:
   filesystem:
     rootdirectory: /data
   delete:
-    # Enabled for the publish-only delete UI/API (inventory.py). Clients can
-    # still only reach DELETE via the publish listener, which requires push login.
+    # Enabled for the publisher-only delete UI/API (inventory.py). Nginx only
+    # lets the push account send DELETE (or any write) to /v2/.
     enabled: true
 
 # Nginx is the only public listener. No debug/metrics listener is enabled.

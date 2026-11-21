@@ -65,7 +65,7 @@ jobs:
             latest=${{ !github.event.release.prerelease }}
           labels: |
             org.opencontainers.image.title=Registreasy
-            org.opencontainers.image.description=Single-container Docker registry with separate pull and publish endpoints
+            org.opencontainers.image.description=Single-container Docker registry with read-only and publisher accounts on one endpoint
 
       - uses: docker/build-push-action@v6
         with:

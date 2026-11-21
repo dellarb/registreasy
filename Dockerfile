@@ -15,7 +15,7 @@ RUN chmod 0755 /usr/local/bin/registreasy-entrypoint \
     && mkdir -p /data /run/registreasy
 
 ENV OTEL_TRACES_EXPORTER=none
-EXPOSE 5000 5002
+EXPOSE 5000
 VOLUME ["/data"]
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \

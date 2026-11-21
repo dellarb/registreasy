@@ -5,14 +5,13 @@ const filter = document.querySelector('#filter');
 const refresh = document.querySelector('#refresh');
 let inventory = null;
 // Session lives only in this page's memory: reloading or signing out clears it.
-let session = null; // { mode: 'pull'|'push', auth: 'Basic …' }
+let session = null; // { user, auth: 'Basic …' }
 const signin = document.querySelector('#signin');
 const app = document.querySelector('#app');
 const signout = document.querySelector('#signout');
 const signinForm = document.querySelector('#signin-form');
 const signinError = document.querySelector('#signin-error');
 const signinSubmit = document.querySelector('#signin-submit');
-let mode = 'pull';
 
 function formatted(value) {
   if (!value) return 'Unavailable';
@@ -167,21 +166,11 @@ async function load() {
   } finally { refresh.disabled=false; }
   await getHealth();
 }
-// Switching mode pre-fills the default account name (pull/push); it can be edited
-// for deployments that set PULL_USERNAME / PUSH_USERNAME.
-function setMode(next, keepUser) {
-  const changed = next !== mode;
-  mode = next;
-  for (const b of document.querySelectorAll('.mode')) {
-    const on = b.dataset.mode === next;
-    b.setAttribute('aria-checked', on ? 'true' : 'false');
-    b.classList.toggle('on', on);
-  }
-  const username = document.querySelector('#username');
-  if (changed || !keepUser || !username.value) username.value = next;
+function resetSigninForm() {
   document.querySelector('#password').value = '';
   signinError.classList.add('hidden');
-  document.querySelector('#password').focus();
+  const username = document.querySelector('#username');
+  (username.value ? document.querySelector('#password') : username).focus();
 }
 function showSignin(message) {
   session = null;
@@ -190,25 +179,24 @@ function showSignin(message) {
   app.classList.add('hidden');
   signout.classList.add('hidden');
   signin.classList.remove('hidden');
-  setMode(mode, true);
+  resetSigninForm();
   if (message) { signinError.textContent = message; signinError.classList.remove('hidden'); }
 }
 function showApp() {
   signin.classList.add('hidden');
   app.classList.remove('hidden');
   signout.classList.remove('hidden');
-  document.querySelector('#app-sub').textContent = session.mode === 'push'
+  document.querySelector('#app-sub').textContent = inventory && inventory.can_delete
     ? 'Publisher access: you can delete tags and repositories.'
     : 'Read-only access: browse and pull images.';
 }
-for (const b of document.querySelectorAll('.mode')) b.addEventListener('click', () => setMode(b.dataset.mode));
 signinForm.addEventListener('submit', async event => {
   event.preventDefault();
   const pw = document.querySelector('#password').value;
   const user = document.querySelector('#username').value.trim();
   if (!pw || !user) return;
   // Passwords ride only in the Authorization header of this request's session.
-  const candidate = { mode, user, auth: basicAuth(user, pw) };
+  const candidate = { user, auth: basicAuth(user, pw) };
   signinSubmit.disabled = true;
   signinError.classList.add('hidden');
   try {
@@ -221,10 +209,10 @@ signinForm.addEventListener('submit', async event => {
     }
     if (response.status === 429) throw Error('too many attempts; wait a few seconds and try again');
     if (!response.ok) throw Error('HTTP ' + response.status);
+    inventory = await response.json();
     session = candidate;
     document.querySelector('#password').value = '';
     showApp();
-    inventory = await response.json();
     applyInventory();
   } catch (error) {
     signinError.textContent = 'Sign-in failed: ' + error.message;

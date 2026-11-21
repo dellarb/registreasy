@@ -32,7 +32,7 @@ ACCEPT = ", ".join((
 ))
 
 
-READ_HTPASSWD = "/run/registreasy/read.htpasswd"
+USERS_HTPASSWD = "/run/registreasy/users.htpasswd"
 PUSH_HTPASSWD = "/run/registreasy/push.htpasswd"
 BASIC_RE = re.compile(r"Basic ([A-Za-z0-9+/=]{1,512})")
 
@@ -366,27 +366,27 @@ class Handler(BaseHTTPRequestHandler):
     def as_json(self, status, value):
         self.respond(status, "application/json; charset=utf-8", json.dumps(value, separators=(",", ":")).encode())
 
-    def listener(self):
-        # nginx sets this per server block and overrides any client-sent value.
-        return self.headers.get("X-Registreasy-Listener")
-
-    def authorized(self, role):
-        """Credentials for the listener's role. The read listener also accepts
-        publisher credentials (entrypoint.sh appends the publisher to
-        read.htpasswd); when no read password exists, pulls are anonymous."""
-        if role == "read":
-            if not pathlib.Path(READ_HTPASSWD).exists():
-                return True
-            return verify_basic(self.headers.get("Authorization"), READ_HTPASSWD)
-        return verify_basic(self.headers.get("Authorization"), PUSH_HTPASSWD)
+    def role(self):
+        """'push' for publisher credentials, 'pull' for the read-only account,
+        None otherwise. The account, not the port, decides what is allowed."""
+        header = self.headers.get("Authorization")
+        if verify_basic(header, PUSH_HTPASSWD):
+            return "push"
+        if verify_basic(header, USERS_HTPASSWD):
+            return "pull"
+        return None
 
     def do_POST(self):
         path = urllib.parse.urlsplit(self.path).path
-        if path != "/api/delete" or self.listener() != "publish":
+        if path != "/api/delete":
             self.as_json(404, {"error": "not_found"})
             return
-        if not self.authorized("publish"):
+        role = self.role()
+        if role is None:
             self.as_json(401, {"error": "unauthorized"})
+            return
+        if role != "push":
+            self.as_json(403, {"error": "forbidden", "message": "only the publisher account can delete"})
             return
         # Browsers cannot send this header cross-site without a CORS preflight,
         # which we never allow, so cached Basic credentials cannot be abused.
@@ -422,13 +422,13 @@ class Handler(BaseHTTPRequestHandler):
             state = health()
             self.as_json(200 if state["status"] == "ok" else 503, state)
         elif path == "/api/inventory":
-            role = "publish" if self.listener() == "publish" else "read"
-            if not self.authorized(role):
+            role = self.role()
+            if role is None:
                 self.as_json(401, {"error": "unauthorized"})
                 return
             try:
                 value = dict(cached_inventory())
-                value["can_delete"] = role == "publish"
+                value["can_delete"] = role == "push"
                 self.as_json(200, value)
             except (OSError, ValueError) as exc:
                 self.as_json(503, {"error": "inventory_unavailable", "message": str(exc)[:150]})

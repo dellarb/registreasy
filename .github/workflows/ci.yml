@@ -17,42 +17,13 @@ jobs:
       - uses: actions/checkout@v4
       - name: Build single-container registry
         run: docker build -t registreasy:test .
-      - name: Anonymous read and authenticated publish
+      - name: Permissions, push and pull
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p .ci-data
           docker run -d --name registreasy-ci \
             -p 127.0.0.1:15000:5000 \
-            -p 127.0.0.1:15002:5002 \
-            -e PUSH_PASSWORD=test-push-password \
-            -v "$PWD/.ci-data:/data" \
-            registreasy:test
-          for i in {1..30}; do
-            if curl --fail --silent http://127.0.0.1:15000/v2/ >/dev/null; then break; fi
-            sleep 1
-          done
-          PUSH_PASSWORD=test-push-password bash tests/smoke.sh \
-            http://127.0.0.1:15000 http://127.0.0.1:15002
-          docker pull alpine:3.20
-          docker tag alpine:3.20 localhost:15002/test/alpine:ci
-          printf '%s\n' test-push-password | docker login localhost:15002 -u push --password-stdin
-          docker push localhost:15002/test/alpine:ci
-          docker logout localhost:15002
-          docker pull localhost:15000/test/alpine:ci
-          curl -fsS http://127.0.0.1:15000/healthz | python3 -c 'import json,sys; x=json.load(sys.stdin); assert x["status"]=="ok" and x["storage"]["writable"]'
-          curl -fsS http://127.0.0.1:15000/ | grep -q 'Image inventory'
-          curl -fsS http://127.0.0.1:15000/inventory.js | grep -q 'function render'
-          curl -fsS http://127.0.0.1:15000/api/inventory | python3 -c 'import json,sys; x=json.load(sys.stdin); assert x["repository_count"]>=1; assert any(t["tag"]=="ci" and t["tag_updated_at"] for r in x["repositories"] if r["name"]=="test/alpine" for t in r["tags"])'
-
-      - name: Protected read and read-only user
-        shell: bash
-        run: |
-          set -euo pipefail
-          docker rm -f registreasy-ci
-          docker run -d --name registreasy-ci \
-            -p 127.0.0.1:15000:5000 \
-            -p 127.0.0.1:15002:5002 \
             -e PUSH_PASSWORD=test-push-password \
             -e PULL_PASSWORD=test-pull-password \
             -v "$PWD/.ci-data:/data" \
@@ -62,54 +33,66 @@ jobs:
             sleep 1
           done
           PUSH_PASSWORD=test-push-password PULL_PASSWORD=test-pull-password \
-            bash tests/smoke.sh http://127.0.0.1:15000 http://127.0.0.1:15002
-          # The page itself is public (it shows a sign-in form); the data API is not.
-          curl -fsS http://127.0.0.1:15000/ | grep -q 'id="signin-form"'
-          test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:15000/api/inventory)" = 401
-          test "$(curl -s -o /dev/null -w '%{http_code}' -u pull:wrong-password http://127.0.0.1:15000/api/inventory)" = 401
-          curl -fsS -u push:test-push-password http://127.0.0.1:15000/api/inventory | python3 -c 'import json,sys; assert json.load(sys.stdin)["can_delete"] is False'
-          curl -fsS -u pull:test-pull-password http://127.0.0.1:15000/api/inventory | python3 -c 'import json,sys; assert json.load(sys.stdin)["tag_count"]>=1'
-          curl -fsS http://127.0.0.1:15000/healthz | python3 -c 'import json,sys; assert json.load(sys.stdin)["status"]=="ok"'
-          printf '%s\n' test-pull-password | docker login localhost:15000 -u pull --password-stdin
-          docker pull localhost:15000/test/alpine:ci
-          # Push to a repository that does not exist yet: re-pushing an image the
-          # registry already has can "succeed" via read-only HEAD checks alone.
-          docker tag alpine:3.20 localhost:15000/test/readonly-check:ci
-          if docker push localhost:15000/test/readonly-check:ci; then
-            echo "ERROR: read-only endpoint accepted a push" >&2
+            bash tests/smoke.sh http://127.0.0.1:15000
+          # The registry refuses to start without both passwords.
+          if docker run --rm -e PUSH_PASSWORD=x registreasy:test; then
+            echo "ERROR: started without PULL_PASSWORD" >&2
             exit 1
           fi
-          test "$(curl -s -o /dev/null -w '%{http_code}' -X PUT -u push:test-push-password \
-            -H 'Content-Type: application/vnd.oci.image.manifest.v1+json' -d '{}' \
-            http://127.0.0.1:15000/v2/test/alpine/manifests/readonly-check)" = 403
+          docker pull alpine:3.20
+          # Pull user: may log in, may not push. Use a repository that does not
+          # exist yet: re-pushing a known image can "succeed" via HEAD checks alone.
+          docker tag alpine:3.20 localhost:15000/test/readonly-check:ci
+          printf '%s\n' test-pull-password | docker login localhost:15000 -u pull --password-stdin
+          if docker push localhost:15000/test/readonly-check:ci; then
+            echo "ERROR: pull user was able to push" >&2
+            exit 1
+          fi
           docker logout localhost:15000
-          printf '%s\n' test-push-password | docker login localhost:15002 -u push --password-stdin
-          docker push localhost:15002/test/alpine:ci
+          # Publisher pushes, then the pull user pulls the same image.
+          docker tag alpine:3.20 localhost:15000/test/alpine:ci
+          printf '%s\n' test-push-password | docker login localhost:15000 -u push --password-stdin
+          docker push localhost:15000/test/alpine:ci
+          docker logout localhost:15000
+          docker rmi localhost:15000/test/alpine:ci
+          printf '%s\n' test-pull-password | docker login localhost:15000 -u pull --password-stdin
+          docker pull localhost:15000/test/alpine:ci
+          docker logout localhost:15000
+          sleep 21  # inventory cache from the smoke test
+          curl -fsS http://127.0.0.1:15000/healthz | python3 -c 'import json,sys; x=json.load(sys.stdin); assert x["status"]=="ok" and x["storage"]["writable"]'
+          curl -fsS http://127.0.0.1:15000/ | grep -q 'id="signin-form"'
+          curl -fsS http://127.0.0.1:15000/inventory.js | grep -q 'function render'
+          curl -fsS -u pull:test-pull-password http://127.0.0.1:15000/api/inventory | python3 -c '
+          import json, sys
+          x = json.load(sys.stdin)
+          assert x["can_delete"] is False
+          assert any(t["tag"] == "ci" and t["tag_updated_at"] for r in x["repositories"] if r["name"] == "test/alpine" for t in r["tags"]), x
+          assert not any(r["name"] == "test/readonly-check" for r in x["repositories"]), x
+          '
 
       - name: Delete API
         shell: bash
         run: |
           set -euo pipefail
-          api() {  # api <port> <json> [curl args...] -> prints body, then HTTP status on the last line
-            local port="$1" body="$2"; shift 2
+          api() {  # api <json> [curl args...] -> prints body, then HTTP status on the last line
+            local body="$1"; shift
             curl -sS -w '\n%{http_code}' -X POST -H 'Content-Type: application/json' \
-              -H 'X-Registreasy-Action: delete' -d "$body" "$@" "http://127.0.0.1:$port/api/delete"
+              -H 'X-Registreasy-Action: delete' -d "$body" "$@" "http://127.0.0.1:15000/api/delete"
           }
-          # The read listener has no delete route at all.
-          test "$(api 15000 '{"repo":"test/alpine","tag":"ci"}' -u push:test-push-password | tail -1)" = 404
-          # Publisher credentials and the action header are both required.
-          test "$(api 15002 '{"repo":"test/alpine","tag":"ci"}' -u pull:test-pull-password | tail -1)" = 401
+          # Only the publisher may delete, and only with the action header.
+          test "$(api '{"repo":"test/alpine","tag":"ci"}' | tail -1)" = 401
+          test "$(api '{"repo":"test/alpine","tag":"ci"}' -u pull:test-pull-password | tail -1)" = 403
           test "$(curl -s -o /dev/null -w '%{http_code}' -X POST -u push:test-push-password \
-            -H 'Content-Type: application/json' -d '{"repo":"test/alpine"}' http://127.0.0.1:15002/api/delete)" = 403
+            -H 'Content-Type: application/json' -d '{"repo":"test/alpine"}' http://127.0.0.1:15000/api/delete)" = 403
           # Preview, stale confirmation, then a real delete.
-          preview="$(api 15002 '{"repo":"test/alpine","tag":"ci","preview":true}' -u push:test-push-password)"
+          preview="$(api '{"repo":"test/alpine","tag":"ci","preview":true}' -u push:test-push-password)"
           test "$(tail -1 <<<"$preview")" = 200
           plan_id="$(head -n -1 <<<"$preview" | python3 -c 'import json,sys; x=json.load(sys.stdin); assert x["preview"] and not x["deleted"] and x["tags"]==["ci"]; print(x["plan_id"])')"
           stale="$(printf '0%.0s' {1..64})"
-          test "$(api 15002 "{\"repo\":\"test/alpine\",\"tag\":\"ci\",\"plan_id\":\"$stale\"}" -u push:test-push-password | tail -1)" = 409
-          test "$(api 15002 "{\"repo\":\"test/alpine\",\"tag\":\"ci\",\"plan_id\":\"$plan_id\"}" -u push:test-push-password | tail -1)" = 200
+          test "$(api "{\"repo\":\"test/alpine\",\"tag\":\"ci\",\"plan_id\":\"$stale\"}" -u push:test-push-password | tail -1)" = 409
+          test "$(api "{\"repo\":\"test/alpine\",\"tag\":\"ci\",\"plan_id\":\"$plan_id\"}" -u push:test-push-password | tail -1)" = 200
           sleep 1
-          curl -fsS -u push:test-push-password http://127.0.0.1:15002/api/inventory | python3 -c '
+          curl -fsS -u push:test-push-password http://127.0.0.1:15000/api/inventory | python3 -c '
           import json, sys
           x = json.load(sys.stdin)
           assert x["can_delete"] is True

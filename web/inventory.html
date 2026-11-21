@@ -20,18 +20,10 @@
 <section id="signin" class="signin hidden" aria-labelledby="signin-title">
   <div class="signin-card">
     <h1 id="signin-title">Sign in</h1>
-    <p class="signin-lede">Choose what you need to do, then enter that account's username and password.</p>
-    <div class="modes" role="radiogroup" aria-label="Access type">
-      <button type="button" class="mode" role="radio" aria-checked="true" data-mode="pull">
-        <strong>Pull</strong><small>Browse and download images (read-only)</small>
-      </button>
-      <button type="button" class="mode" role="radio" aria-checked="false" data-mode="push">
-        <strong>Push</strong><small>Publish and delete images</small>
-      </button>
-    </div>
+    <p class="signin-lede">Sign in with the pull account to browse, or the push account to also delete images.</p>
     <form id="signin-form" autocomplete="off">
       <label for="username">Username</label>
-      <input id="username" type="text" value="pull" autocomplete="username" autocapitalize="none" spellcheck="false" required>
+      <input id="username" type="text" autocomplete="username" autocapitalize="none" spellcheck="false" required>
       <label for="password">Password</label>
       <input id="password" type="password" autocomplete="current-password" required>
       <div id="signin-error" class="form-error hidden" role="alert"></div>

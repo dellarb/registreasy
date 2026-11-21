@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Build a project's Dockerfile and push it to Registreasy (publish endpoint).
-# Run on the registry box: the publish port is bound to 127.0.0.1.
+# Build a project's Dockerfile and push it to Registreasy as the publisher.
+# Run on the registry box: it pushes to the port published on 127.0.0.1.
 #
 # usage: scripts/publish.sh <src-dir> <repo-name> <tag> [platform]
 #   src-dir    directory holding the Dockerfile (build context)
@@ -14,7 +14,7 @@ platform="${4:-linux/amd64}"
 envfile="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)/.env"
 
 set -a; . "$envfile"; set +a
-host="127.0.0.1:${PUSH_PORT:-5002}"   # after .env, so its PUSH_PORT is honoured
+host="127.0.0.1:${PORT:-5000}"   # after .env, so its PORT is honoured
 img="$host/$name:$tag"
 
 rev=$(git -C "$src" rev-parse HEAD 2>/dev/null || echo unknown)
