@@ -131,7 +131,7 @@ docker run --rm -v "$PWD/registry.yml:/etc/distribution/config.yml:ro" \
 docker compose start
 ```
 
-Add `--dry-run` after `garbage-collect` to see what would be removed first. Run GC after deletes you care about; it is not automatic. A fully deleted repository may still be listed (with no tags) because the registry keeps its directory.
+Add `--dry-run` after `garbage-collect` to see what would be removed first. Run GC after deletes you care about; it is not automatic. Deleting the last tag leaves an empty repository listed (the registry keeps its directory); **Delete repository** on it removes that directory.
 
 ## Security
 

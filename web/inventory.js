@@ -50,6 +50,7 @@ function showNotice(message, isError) {
   notice.classList.remove('hidden');
 }
 function describe(plan) {
+  if (plan.empty) return 'Remove the empty repository ' + plan.repository + '?\n\nIt has no tags; its leftover directory will be removed.';
   const tagList = plan.tags.join(', ');
   const scope = plan.scope === 'repository'
     ? 'the whole repository ' + plan.repository + ' (' + plan.tags.length + ' tags)'
@@ -95,7 +96,7 @@ function render() {
     const head = el('div','repo-head');
     const actions = el('div','repo-actions');
     actions.append(el('div','repo-meta',tags.length + (tags.length === 1 ? ' tag':' tags')));
-    if (canDelete && repo.tags.length) actions.append(button('Delete repository', 'danger', () => deleteFlow(repo.name, null)));
+    if (canDelete) actions.append(button('Delete repository', 'danger', () => deleteFlow(repo.name, null)));
     head.append(el('div','repo-title',repo.name), actions);
     card.append(head);
     if (tags.length) {

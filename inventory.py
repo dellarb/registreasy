@@ -6,6 +6,7 @@ import json
 import os
 import pathlib
 import re
+import shutil
 import threading
 import time
 import urllib.error
@@ -223,6 +224,37 @@ def tag_digests(repo, tags):
     return digests
 
 
+def repo_dir(repo):
+    root = (DATA / "docker/registry/v2/repositories").resolve()
+    path = (root / repo).resolve()
+    if path == root or root not in path.parents:
+        raise ValueError("invalid repository name")
+    return path
+
+
+def delete_empty_repo(repo, preview, expected_plan):
+    """Remove a tagless repository's leftover directory (the registry API cannot)."""
+    path = repo_dir(repo)
+    if not path.is_dir():
+        raise ValueError("repository not found")
+    if any(c.is_dir() and not c.name.startswith("_") for c in path.iterdir()):
+        raise ValueError("repository directory contains nested repositories")
+    plan_id = hashlib.sha256(json.dumps([repo, None, [], []]).encode()).hexdigest()
+    if expected_plan is not None and expected_plan != plan_id:
+        raise Conflict("registry changed since the preview; review the new plan and try again")
+    result = {"repository": repo, "scope": "repository", "tag": None, "tags": [], "digests": [],
+              "plan_id": plan_id, "preview": preview, "deleted": False, "empty": True}
+    if preview:
+        return result
+    try:
+        shutil.rmtree(path)
+    except OSError as exc:
+        raise ValueError(f"could not remove repository directory: {exc.strerror}")
+    result["deleted"] = True
+    invalidate_cache()
+    return result
+
+
 def delete_images(body):
     """Delete a tag (and every tag sharing its manifest) or a whole repository.
 
@@ -246,11 +278,14 @@ def delete_images(body):
     try:
         tags = paged("/v2/" + encoded + "/tags/list", "tags")
     except urllib.error.HTTPError as exc:
-        if exc.code == 404:
-            raise ValueError("repository not found")
-        raise
+        if exc.code != 404:
+            raise
+        # Registry says unknown: a leftover directory may still be listed in the catalog.
+        tags = []
     if not tags:
-        raise ValueError("repository has no tags")
+        if tag is not None:
+            raise ValueError("tag not found")
+        return delete_empty_repo(repo, preview, expected_plan)
     digests = tag_digests(repo, tags)
     if tag is not None:
         if tag not in digests:
