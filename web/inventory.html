@@ -38,6 +38,7 @@
 <section class="stats" aria-label="Registry statistics">
   <div class="stat"><small>Repositories</small><strong id="repo-count">—</strong></div>
   <div class="stat"><small>Tags</small><strong id="tag-count">—</strong></div>
+  <div class="stat"><small>Registry size</small><strong id="registry-size">—</strong></div>
   <div class="stat"><small>Last checked</small><strong id="last-checked" class="time">—</strong></div>
 </section>
 <label for="filter" class="filter-label">Filter repositories or tags</label>
@@ -45,7 +46,7 @@
 <div id="notice" class="notice" role="status">Loading inventory…</div>
 <section id="repositories" aria-label="Repositories" class="repositories"></section>
 <footer>
-  <span>¹ Tag updated: most recent approximate timestamp among the shown tags. ² Image built: metadata from the image, not its publication date. ³ Size: compressed image layers and config for the selected platform, where shown.</span>
+  <span>¹ Tag updated: most recent approximate timestamp among the shown tags. ² Image built: metadata from the image, not its publication date. ³ Size: compressed image layers and config for the selected platform, where shown. Registry size includes stored data awaiting garbage collection.</span>
   <a href="/healthz" target="_blank" rel="noopener noreferrer">View health JSON ↗</a>
 </footer>
 </section>

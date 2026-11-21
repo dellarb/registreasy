@@ -342,6 +342,19 @@ def tag_entry(repo, tag):
     return {"tag": tag, "tag_updated_at": tag_updated(repo, tag), **metadata}
 
 
+def registry_size():
+    root = DATA / "docker/registry/v2"
+    try:
+        if not root.exists():
+            return 0
+        def fail(error):
+            raise error
+        return sum((pathlib.Path(directory) / name).stat().st_size
+                   for directory, _, files in os.walk(root, onerror=fail) for name in files)
+    except OSError:
+        return None
+
+
 def inventory():
     listing = []
     tag_count = 0
@@ -375,6 +388,7 @@ def inventory():
         "generated_at": stamp(time.time()),
         "repository_count": len(entries),
         "tag_count": tag_count,
+        "size_bytes": registry_size(),
         "repositories": entries,
         "date_note": "Tag updated date is filesystem link mtime (approximate); image built date comes from image metadata. Neither is a push audit history.",
     }

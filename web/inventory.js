@@ -178,6 +178,7 @@ async function getHealth() {
 function applyInventory() {
   document.querySelector('#repo-count').textContent=inventory.repository_count;
   document.querySelector('#tag-count').textContent=inventory.tag_count;
+  document.querySelector('#registry-size').textContent=sizeLabel(inventory.size_bytes);
   document.querySelector('#last-checked').textContent=formatted(inventory.generated_at);
   render();
 }
