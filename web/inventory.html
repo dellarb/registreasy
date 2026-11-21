@@ -20,7 +20,7 @@
 <section id="signin" class="signin hidden" aria-labelledby="signin-title">
   <div class="signin-card">
     <h1 id="signin-title">Sign in</h1>
-    <p class="signin-lede">Choose what you need to do, then enter that account's password.</p>
+    <p class="signin-lede">Choose what you need to do, then enter that account's username and password.</p>
     <div class="modes" role="radiogroup" aria-label="Access type">
       <button type="button" class="mode" role="radio" aria-checked="true" data-mode="pull">
         <strong>Pull</strong><small>Browse and download images (read-only)</small>
@@ -30,7 +30,9 @@
       </button>
     </div>
     <form id="signin-form" autocomplete="off">
-      <label for="password">Password for <code id="signin-user">pull</code></label>
+      <label for="username">Username</label>
+      <input id="username" type="text" value="pull" autocomplete="username" autocapitalize="none" spellcheck="false" required>
+      <label for="password">Password</label>
       <input id="password" type="password" autocomplete="current-password" required>
       <div id="signin-error" class="form-error hidden" role="alert"></div>
       <button id="signin-submit" type="submit" class="primary">Sign in</button>

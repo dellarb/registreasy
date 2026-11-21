@@ -33,8 +33,21 @@ async function callDelete(body) {
     body: JSON.stringify(body),
   });
   const payload = await response.json().catch(() => ({}));
+  if (response.status === 429) throw Error('Too many requests; wait a few seconds and try again.');
   if (!response.ok) throw Error(payload.message || payload.error || ('HTTP ' + response.status));
   return payload;
+}
+// btoa() only accepts Latin-1; encode the credentials as UTF-8 first.
+function basicAuth(user, password) {
+  const bytes = new TextEncoder().encode(user + ':' + password);
+  let binary = '';
+  for (const b of bytes) binary += String.fromCharCode(b);
+  return 'Basic ' + btoa(binary);
+}
+function showNotice(message, isError) {
+  notice.textContent = message;
+  notice.classList.toggle('error', !!isError);
+  notice.classList.remove('hidden');
 }
 function describe(plan) {
   const tagList = plan.tags.join(', ');
@@ -53,15 +66,12 @@ async function deleteFlow(repo, tag) {
     const body = tag ? { repo, tag } : { repo };
     const plan = await callDelete({ ...body, preview: true });
     if (!window.confirm(describe(plan))) return;
-    const done = await callDelete(body);
-    notice.textContent = 'Deleted ' + (done.scope === 'repository' ? done.repository : done.repository + ':' + done.tag) + '.';
-    notice.classList.remove('error');
-    notice.classList.remove('hidden');
+    // plan_id makes the server refuse if the registry changed since the preview.
+    const done = await callDelete({ ...body, plan_id: plan.plan_id });
     await load();
+    if (session && inventory) showNotice('Deleted ' + (done.scope === 'repository' ? done.repository : done.repository + ':' + done.tag) + '.', false);
   } catch (error) {
-    notice.textContent = 'Delete failed: ' + error.message;
-    notice.classList.add('error');
-    notice.classList.remove('hidden');
+    showNotice('Delete failed: ' + error.message, true);
   }
 }
 function button(label, className, onClick) {
@@ -85,7 +95,7 @@ function render() {
     const head = el('div','repo-head');
     const actions = el('div','repo-actions');
     actions.append(el('div','repo-meta',tags.length + (tags.length === 1 ? ' tag':' tags')));
-    if (canDelete) actions.append(button('Delete repository', 'danger', () => deleteFlow(repo.name, null)));
+    if (canDelete && repo.tags.length) actions.append(button('Delete repository', 'danger', () => deleteFlow(repo.name, null)));
     head.append(el('div','repo-title',repo.name), actions);
     card.append(head);
     if (tags.length) {
@@ -114,9 +124,9 @@ function render() {
         tbody.append(row);
       }
       table.append(tbody);wrapper.append(table);card.append(wrapper);
-    } else card.append(el('div','no-tags','No tags found'));
+    } else card.append(el('div','no-tags', repo.error ? 'Tags could not be read' : 'No tags found'));
     const foot=el('div','repo-foot');
-    foot.append(el('span','', 'Last tagged: '+formatted(repo.updated_at)),el('span','','Read-only'));
+    foot.append(el('span','', 'Last tagged: '+formatted(repo.updated_at)),el('span','', canDelete ? 'Publisher access' : 'Read-only'));
     card.append(foot);list.append(card);
   }
   notice.classList.toggle('hidden', shown > 0);
@@ -147,6 +157,7 @@ async function load() {
   try {
     const response = await fetch('/api/inventory',{cache:'no-store', credentials:'omit', headers: {Authorization: session.auth}});
     if (response.status === 401) { showSignin('That password was not accepted for ' + session.user + '.'); return; }
+    if (response.status === 429) throw Error('Too many requests; wait a few seconds and refresh.');
     if (!response.ok) throw Error('Inventory unavailable (HTTP '+response.status+')');
     inventory=await response.json();
     applyInventory();
@@ -155,14 +166,18 @@ async function load() {
   } finally { refresh.disabled=false; }
   await getHealth();
 }
-function setMode(next) {
+// Switching mode pre-fills the default account name (pull/push); it can be edited
+// for deployments that set PULL_USERNAME / PUSH_USERNAME.
+function setMode(next, keepUser) {
+  const changed = next !== mode;
   mode = next;
   for (const b of document.querySelectorAll('.mode')) {
     const on = b.dataset.mode === next;
     b.setAttribute('aria-checked', on ? 'true' : 'false');
     b.classList.toggle('on', on);
   }
-  document.querySelector('#signin-user').textContent = next;
+  const username = document.querySelector('#username');
+  if (changed || !keepUser || !username.value) username.value = next;
   document.querySelector('#password').value = '';
   signinError.classList.add('hidden');
   document.querySelector('#password').focus();
@@ -174,8 +189,8 @@ function showSignin(message) {
   app.classList.add('hidden');
   signout.classList.add('hidden');
   signin.classList.remove('hidden');
+  setMode(mode, true);
   if (message) { signinError.textContent = message; signinError.classList.remove('hidden'); }
-  setMode(mode);
 }
 function showApp() {
   signin.classList.add('hidden');
@@ -189,10 +204,10 @@ for (const b of document.querySelectorAll('.mode')) b.addEventListener('click', 
 signinForm.addEventListener('submit', async event => {
   event.preventDefault();
   const pw = document.querySelector('#password').value;
-  if (!pw) return;
-  const user = mode;
+  const user = document.querySelector('#username').value.trim();
+  if (!pw || !user) return;
   // Passwords ride only in the Authorization header of this request's session.
-  const candidate = { mode, user, auth: 'Basic ' + btoa(user + ':' + pw) };
+  const candidate = { mode, user, auth: basicAuth(user, pw) };
   signinSubmit.disabled = true;
   signinError.classList.add('hidden');
   try {
@@ -203,6 +218,7 @@ signinForm.addEventListener('submit', async event => {
       document.querySelector('#password').select();
       return;
     }
+    if (response.status === 429) throw Error('too many attempts; wait a few seconds and try again');
     if (!response.ok) throw Error('HTTP ' + response.status);
     session = candidate;
     document.querySelector('#password').value = '';

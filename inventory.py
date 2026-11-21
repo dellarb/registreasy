@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Read-only registry inventory and health service. Only listens on loopback."""
 import datetime as dt
+import hashlib
 import json
 import os
 import pathlib
@@ -10,6 +11,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 REGISTRY = "http://127.0.0.1:5001"
@@ -18,6 +20,7 @@ ASSETS = pathlib.Path(__file__).resolve().parent / "web"
 PAGE_SIZE = 100
 MAX_ITEMS = 2000
 CACHE_SECONDS = 20
+FETCH_WORKERS = 8
 CACHE = {"at": 0, "data": None}
 LOCK = threading.Lock()
 ACCEPT = ", ".join((
@@ -82,6 +85,14 @@ TAG_RE = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}")
 DIGEST_RE = re.compile(r"sha256:[a-f0-9]{64}")
 
 
+class LimitExceeded(ValueError):
+    """The registry holds more than MAX_ITEMS repositories or tags."""
+
+
+class Conflict(ValueError):
+    """The registry changed between a delete preview and its confirmation."""
+
+
 def paged(path, key):
     results = []
     last = None
@@ -93,7 +104,7 @@ def paged(path, key):
             raise ValueError("Malformed registry listing")
         results.extend(items)
         if len(results) > MAX_ITEMS:
-            raise ValueError("Registry exceeds inventory limit")
+            raise LimitExceeded("Registry exceeds inventory limit")
         if not items or not headers.get("Link"):
             return results
         if items[-1] == last:
@@ -137,24 +148,44 @@ def tag_metadata(repo, tag):
     return {"digest": digest, "media_type": media_type, "built_at": created}
 
 
+def tag_entry(repo, tag):
+    metadata = {"digest": None, "media_type": None, "built_at": None}
+    try:
+        metadata = tag_metadata(repo, tag)
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        # Concurrent tag updates or unusual manifests may break one tag; keep the rest.
+        pass
+    return {"tag": tag, "tag_updated_at": tag_updated(repo, tag), **metadata}
+
+
 def inventory():
-    entries = []
+    listing = []
     tag_count = 0
     for repo in paged("/v2/_catalog", "repositories"):
-        tags = []
-        for tag in paged("/v2/" + urllib.parse.quote(repo, safe="/") + "/tags/list", "tags"):
-            metadata = {"digest": None, "media_type": None, "built_at": None}
-            try:
-                metadata = tag_metadata(repo, tag)
-            except (OSError, ValueError, KeyError):
-                # Concurrent tag updates may invalidate a particular manifest.
-                pass
-            tags.append({"tag": tag, "tag_updated_at": tag_updated(repo, tag), **metadata})
-            tag_count += 1
-            if tag_count > MAX_ITEMS:
-                raise ValueError("Registry exceeds inventory limit")
-        tags.sort(key=lambda x: (x["tag_updated_at"] or "", x["tag"]), reverse=True)
-        entries.append({"name": repo, "tags": tags, "updated_at": tags[0]["tag_updated_at"] if tags else None})
+        error = None
+        try:
+            tags = paged("/v2/" + urllib.parse.quote(repo, safe="/") + "/tags/list", "tags")
+        except LimitExceeded:
+            raise
+        except (OSError, ValueError):
+            # e.g. a repository whose manifests were all deleted, or upload-only
+            # leftovers: report it rather than failing the whole inventory.
+            tags, error = [], "tags_unavailable"
+        tag_count += len(tags)
+        if tag_count > MAX_ITEMS:
+            raise LimitExceeded("Registry exceeds inventory limit")
+        listing.append((repo, tags, error))
+
+    entries = []
+    with ThreadPoolExecutor(max_workers=FETCH_WORKERS) as pool:
+        pending = [(repo, error, [pool.submit(tag_entry, repo, t) for t in tags]) for repo, tags, error in listing]
+        for repo, error, futures in pending:
+            tags = [future.result() for future in futures]
+            tags.sort(key=lambda x: (x["tag_updated_at"] or "", x["tag"]), reverse=True)
+            entry = {"name": repo, "tags": tags, "updated_at": tags[0]["tag_updated_at"] if tags else None}
+            if error:
+                entry["error"] = error
+            entries.append(entry)
     entries.sort(key=lambda x: (x["updated_at"] or "", x["name"]), reverse=True)
     return {
         "generated_at": stamp(time.time()),
@@ -196,12 +227,17 @@ def delete_images(body):
     """Delete a tag (and every tag sharing its manifest) or a whole repository.
 
     The registry removes manifests by digest, so a tag delete also removes any
-    other tags on the same digest. `preview` returns the plan without deleting.
+    other tags on the same digest. `preview` returns the plan (with a `plan_id`)
+    without deleting. A confirmation may pass that `plan_id` back; if the
+    registry changed since the preview the delete is refused (Conflict).
     Disk space is only reclaimed later by garbage collection.
     """
     repo = body.get("repo")
     tag = body.get("tag")
     preview = body.get("preview") is True
+    expected_plan = body.get("plan_id")
+    if expected_plan is not None and (not isinstance(expected_plan, str) or not re.fullmatch(r"[a-f0-9]{64}", expected_plan)):
+        raise ValueError("invalid plan_id")
     if not isinstance(repo, str) or not REPO_RE.fullmatch(repo):
         raise ValueError("invalid repository name")
     if tag is not None and (not isinstance(tag, str) or not TAG_RE.fullmatch(tag)):
@@ -227,12 +263,16 @@ def delete_images(body):
         removed_tags = sorted(digests)
         remove_digests = sorted(set(digests.values()))
         scope = "repository"
+    plan_id = hashlib.sha256(json.dumps([repo, tag, removed_tags, remove_digests]).encode()).hexdigest()
+    if expected_plan is not None and expected_plan != plan_id:
+        raise Conflict("registry changed since the preview; review the new plan and try again")
     result = {
         "repository": repo,
         "scope": scope,
         "tag": tag,
         "tags": removed_tags,
         "digests": remove_digests,
+        "plan_id": plan_id,
         "preview": preview,
         "deleted": False,
     }
@@ -297,12 +337,12 @@ class Handler(BaseHTTPRequestHandler):
 
     def authorized(self, role):
         """Credentials for the listener's role. The read listener also accepts
-        publisher credentials; when no read password exists, pulls are anonymous."""
+        publisher credentials (entrypoint.sh appends the publisher to
+        read.htpasswd); when no read password exists, pulls are anonymous."""
         if role == "read":
             if not pathlib.Path(READ_HTPASSWD).exists():
                 return True
-            return verify_basic(self.headers.get("Authorization"), READ_HTPASSWD) or \
-                verify_basic(self.headers.get("Authorization"), PUSH_HTPASSWD)
+            return verify_basic(self.headers.get("Authorization"), READ_HTPASSWD)
         return verify_basic(self.headers.get("Authorization"), PUSH_HTPASSWD)
 
     def do_POST(self):
@@ -334,6 +374,8 @@ class Handler(BaseHTTPRequestHandler):
             return
         try:
             self.as_json(200, delete_images(body))
+        except Conflict as exc:
+            self.as_json(409, {"error": "changed_since_preview", "message": str(exc)[:150]})
         except ValueError as exc:
             self.as_json(400, {"error": "delete_refused", "message": str(exc)[:150]})
         except OSError as exc:

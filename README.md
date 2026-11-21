@@ -46,19 +46,21 @@ The exact network name depends on your Docker Compose project name (check `docke
 
 ## Inventory and health
 
-Browse the **read endpoint's root URL**, for example `https://registry.example.com/`, to see a read-only inventory. It groups image repositories and displays tags, manifest digests, image build dates (where present in OCI/Docker config) and approximate tag update dates. It includes a repository/tag filter and health status.
+Browse the **read endpoint's root URL**, for example `https://registry.example.com/`, to see the inventory. The page shows a sign-in form: choose **Pull** or **Push**, then enter that account's username (pre-filled with `pull` / `push`, editable if you changed `PULL_USERNAME` / `PUSH_USERNAME`) and password. It groups image repositories and displays tags, manifest digests, image build dates (where present in OCI/Docker config) and approximate tag update dates. It includes a repository/tag filter and health status. Credentials are kept only in the browser tab's memory.
 
 | Route on read endpoint | Behaviour |
 | --- | --- |
-| `GET /` | Inventory UI, protected by `PULL_PASSWORD` when set |
-| `GET /api/inventory` | JSON repository/tag inventory, same read authentication |
+| `GET /` | Inventory page and sign-in form (the page itself is public; it contains no data) |
+| `GET /api/inventory` | JSON repository/tag inventory; requires pull or push credentials when `PULL_PASSWORD` is set |
 | `GET /healthz` | Unauthenticated health JSON (HTTP 200 healthy, HTTP 503 degraded) |
+
+The `/api/` routes on both endpoints are rate limited (10 requests/second per endpoint, bursts of 20, then HTTP 429) to slow down password guessing. Docker traffic on `/v2/` is not limited.
 
 `/healthz` checks that the underlying Registry v3 API responds and that the image storage is writable, and shows available storage bytes. The container healthcheck uses this endpoint.
 
 **Dates:** The tag update date comes from the Registry filesystem's current tag-link modification time and is only an approximation of the last time the tag was written; it is not a reliable historical push event timestamp. An image's build timestamp comes from its OCI/Docker metadata and can be absent or very different from its push date. Historical versions are shown only while tagged. The inventory is cached for up to 20 seconds and currently supports up to 2,000 listed repositories/tags.
 
-No separate container, database, ports or volumes are required. The UI is on the **read port** only; it has no write functions and respects the optional pull password.
+No separate container, database, ports or volumes are required. On the read endpoint the page is read-only, whichever account signs in. The publish endpoint serves the same page with delete controls (see below).
 
 ## Configuration
 
@@ -117,19 +119,19 @@ curl -u push:"$PUSH_PASSWORD" -H 'Content-Type: application/json' -H 'X-Registre
   -d '{"repo":"tiller-router","tag":"latest","preview":true}' https://registry-push.<host>/api/delete
 ```
 
-Omit `tag` to delete the whole repository. Use `"preview": true` to see the plan without deleting. Note the publish endpoint's `/api/delete` route is the only delete path; registry-level DELETE on `/v2/` also requires push login.
+Omit `tag` to delete the whole repository. Use `"preview": true` to see the plan without deleting; the response includes a `plan_id`. Send that `plan_id` with the real delete and it is refused with HTTP 409 if the tags or digests changed since the preview (the web page always does this). Note the publish endpoint's `/api/delete` route is the only delete path; registry-level DELETE on `/v2/` also requires push login.
 
-**Disk space:** a delete frees nothing until garbage collection runs. Stop uploads first, then:
+**Disk space:** a delete frees nothing until garbage collection runs. GC must not run while uploads can happen, so stop the registry first. Run from the checkout directory (`registry.yml` stores data under `/data`, so mount `./data` there):
 
 ```bash
 docker compose stop
 docker run --rm -v "$PWD/registry.yml:/etc/distribution/config.yml:ro" \
-  -v "$PWD/data/registry:/var/lib/registry" registry:3 \
+  -v "$PWD/data:/data" registry:3 \
   garbage-collect --delete-untagged /etc/distribution/config.yml
 docker compose start
 ```
 
-Run GC after deletes you care about; it is not automatic.
+Add `--dry-run` after `garbage-collect` to see what would be removed first. Run GC after deletes you care about; it is not automatic. A fully deleted repository may still be listed (with no tags) because the registry keeps its directory.
 
 ## Security
 
@@ -137,12 +139,24 @@ Run GC after deletes you care about; it is not automatic.
 - Only Nginx reaches the internal Registry v3 backend; direct backend access is blocked.
 - Read endpoint blocks all non-GET/HEAD methods, regardless of username.
 - The publishing endpoint challenges credentials at `GET /v2/`, which is required for reliable Docker CLI publishing.
-- Deletion is available only on the publish endpoint, behind `PUSH_PASSWORD`. The read endpoint and the read-only inventory page never show delete controls, and its API rejects the delete route entirely.
+- Deletion is available only on the publish endpoint, behind `PUSH_PASSWORD`. The read endpoint never shows delete controls (even to a publisher) and has no delete route at all.
 - Registry deletes remove manifest references only. Disk space is reclaimed by garbage collection (see below).
 - Without `PULL_PASSWORD`, images and tags are not confidential. Limit access through LAN/Tailscale/firewall rules if that matters.
 - Environment secrets are visible to host-level Docker administrators via container inspection. Keep `.env` private, and rotate passwords when needed.
 - Persistent image storage and the stable internal HTTP signing secret live in `./data`; back it up.
 - `PUSH_PORT` should only be reachable through the trusted TLS proxy. Limit access to it further by source IP if desired.
+
+## Prebuilt images (GHCR)
+
+Publishing a GitHub release whose tag is `vMAJOR.MINOR.PATCH` (for example `v0.1.0`) runs the integration tests, then builds `linux/amd64` and `linux/arm64` images and pushes them to `ghcr.io/<owner>/<repo>`:
+
+| Release | Image tags |
+| --- | --- |
+| `v0.1.0` | `0.1.0`, `0.1`, `latest` |
+| `v1.2.3` | `1.2.3`, `1.2`, `1`, `latest` |
+| `v0.2.0-rc.1` (marked pre-release) | `0.2.0-rc.1` only |
+
+Releases with any other tag format fail the workflow without publishing. To use a prebuilt image instead of building locally, replace `build: .` in `docker-compose.yml` with, for example, `image: ghcr.io/<owner>/registreasy:0.1`. New GHCR packages are private by default; make the package public in its GitHub settings if other machines should pull it without logging in.
 
 ## Development
 
@@ -153,6 +167,6 @@ PUSH_PASSWORD=test-password bash tests/smoke.sh \
   http://127.0.0.1:5000 http://127.0.0.1:5002
 ```
 
-The smoke tests exercise both endpoints' access permissions. GitHub Actions additionally tests real `docker login`, push and pull behaviour in both anonymous and protected-read modes.
+The smoke tests exercise both endpoints' access permissions; the test upload they start is cancelled afterwards, so they are safe to run against a live registry. GitHub Actions additionally tests real `docker login`, push and pull behaviour in both anonymous and protected-read modes, and the delete API.
 
 This project wraps [CNCF Distribution](https://distribution.github.io/distribution/) and [Nginx](https://nginx.org/), rather than implementing image storage itself.
