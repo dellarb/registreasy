@@ -137,7 +137,16 @@ function render() {
         const tag = group[0];
         const row = el('tr');
         const label = el('td');
-        for (const item of group) { const pill = el('span','tag',item.tag); pill.title = item.tag; label.append(pill); }
+        const latest = group.find(item => item.tag === 'latest');
+        const revision = latest && group.find(item => /^rev-[a-f0-9]{7,}$/i.test(item.tag));
+        const displayed = latest && revision
+          ? [latest, revision, ...group.filter(item => item !== latest && item !== revision)]
+          : group;
+        for (const item of displayed) {
+          const pill = el('span', item === revision ? 'tag-sha' : 'tag', item.tag);
+          pill.title = item.tag;
+          label.append(pill);
+        }
         row.append(label);
         row.append(el('td',tag.tag_updated_at?'':'missing',formatted(tag.tag_updated_at)));
         row.append(el('td',tag.built_at?'':'missing',formatted(tag.built_at)));
