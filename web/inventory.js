@@ -129,25 +129,22 @@ function render() {
       const table = el('table');
       const thead = el('thead');
       const titles = el('tr');
-      for (const title of ['Tag / version','Tag updated¹','Image built²','Size³','Digest']) titles.append(el('th','',title));
+      for (const title of ['Tag','Version','Tag updated¹','Image built²','Size³','Digest']) titles.append(el('th','',title));
       if (canDelete) titles.append(el('th','actions',''));
       thead.append(titles); table.append(thead);
       const tbody = el('tbody');
       for (const group of groups) {
         const tag = group[0];
         const row = el('tr');
-        const label = el('td');
-        const latest = group.find(item => item.tag === 'latest');
-        const revision = group.find(item => /^rev-[a-f0-9]{7,}/i.test(item.tag));
-        const displayed = latest && revision
-          ? [latest, revision, ...group.filter(item => item !== latest && item !== revision)]
-          : group;
-        for (const item of displayed) {
-          const tagLabel = el('span', /^rev-[a-f0-9]{7,}/i.test(item.tag) ? 'tag-sha' : 'tag', item.tag);
+        const tagCell = el('td');
+        const versionCell = el('td');
+        for (const item of group) {
+          const isVersion = /^rev-[a-f0-9]{7,}/i.test(item.tag);
+          const tagLabel = el('span', isVersion ? 'tag-sha' : 'tag', item.tag);
           tagLabel.title = item.tag;
-          label.append(tagLabel);
+          (isVersion ? versionCell : tagCell).append(tagLabel);
         }
-        row.append(label);
+        row.append(tagCell, versionCell);
         row.append(el('td',tag.tag_updated_at?'':'missing',formatted(tag.tag_updated_at)));
         row.append(el('td',tag.built_at?'':'missing',formatted(tag.built_at)));
         const size = el('td', tag.size_bytes == null ? 'missing' : '', sizeLabel(tag.size_bytes));
