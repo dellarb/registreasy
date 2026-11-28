@@ -124,6 +124,7 @@ ln -sfn "$RUN" "$LOGS/latest"
 : >"$RUN/summary.txt"
 RAW="$RUN/raw.txt"
 : >"$RAW"
+UNIT_IDS="$RUN/tmp/unit-ids.txt"
 
 cleanup_children() {
     local pid
@@ -171,6 +172,8 @@ if (( ${#selected[@]} == 0 && plan_smoke == 0 )); then
     exit 1
 fi
 for id in "${selected[@]}"; do printf 'unit\t%s\n' "$id" >>"$RUN/tmp/expected.tsv"; done
+# The unit run takes this exact list, so a run costs one discovery, not two.
+printf '%s\n' "${selected[@]}" >"$RUN/tmp/unit-ids.txt"
 (( plan_smoke == 1 )) && printf 'smoke\ttests/smoke.sh\n' >>"$RUN/tmp/expected.tsv"
 
 # ------------------------------------------------------------ execution ----
@@ -179,9 +182,8 @@ for id in "${selected[@]}"; do printf 'unit\t%s\n' "$id" >>"$RUN/tmp/expected.ts
 # returns: bash 5.2 treats "exec" inside a function whose caller redirects
 # output as an exit of the whole script.
 execute_unit() {
-    local args=()
+    local args=(--run-listed "$UNIT_IDS")
     [[ "$FAILFAST" == 1 ]] && args+=(--failfast)
-    [[ -n "$FILTER" && "$FILTER" != smoke ]] && args+=(--filter "$FILTER")
     timeout --kill-after=10 "$RUN_TIMEOUT" python3 tests/support/record_runner.py "${args[@]}"
 }
 execute_smoke() {
@@ -227,12 +229,21 @@ if (( plan_smoke == 1 )); then
 fi
 set -e
 
-# A timeout or kill leaves a bracket open; name it here, before analysis.
-if [[ "$unit_status" == 124 || "$unit_status" == 137 ]]; then
-    # A NOTE for the open bracket: the test that was running when the timeout
-    # fired. The analyser turns it into that test's failure reason.
-    printf 'NOTE tests/support/record_runner.py tests/run-tests.sh:1: the suite was killed after %ss (TEST_TIMEOUT / --timeout)\n' \
-        "$RUN_TIMEOUT" >>"$RUN/records.txt"
+# A killed runner (timeout, crash, signal) leaves a bracket open and never gets
+# to print SUMMARY; name that bracket before the analyser looks at it.
+if ! grep -q '^SUMMARY ' "$RUN/records.txt" && grep -q '^BEGIN ' "$RUN/records.txt"; then
+    # An empty owner means the run was killed between a test's TEST record and
+    # the next BEGIN, so the analyser keeps the unfinished bracket itself.
+    bracket_owner="$(awk '/^BEGIN /{owner=$2} /^TEST /{owner=""} END{print owner}' "$RUN/records.txt")"
+    bracket_owner="${bracket_owner:-tests/support/record_runner.py}"
+    case "$unit_status" in
+        124|137) why="the suite was killed after ${RUN_TIMEOUT}s (TEST_TIMEOUT / --timeout)" ;;
+        *)      why="the runner exited with status $unit_status before finishing" ;;
+    esac
+    # Owned by the open bracket (the analyser attributes a NOTE from an unknown
+    # owner to that bracket), so the test that was running when it stopped is the
+    # one reported as unfinished.
+    printf 'NOTE %s tests/run-tests.sh:1: %s\n' "$bracket_owner" "$why" >>"$RUN/records.txt"
 fi
 
 # ------------------------------------------------------------- analysis ----
@@ -391,6 +402,11 @@ def has_source_line(entry):
     return any(where for where, _, _ in entry["asserts"])
 
 
+# The runner's own NOTE when it had to stop early (timeout, crash): it names the
+# unfinished bracket when nothing else can.
+pending_reason = next((m.group(2) for m in map(NOTE.match, records)
+                       if m and m.group(1).startswith("tests/support/")), "")
+
 for uid in order:
     entry = tests[uid]
     if entry["status"] in ("ERROR", "CRASH"):
@@ -413,6 +429,9 @@ for uid in order:
             if m:
                 entry["asserts"] = [(m.group(1), int(m.group(2)), m.group(3))]
                 break
+    if entry["status"] in ("FAIL", "ERROR", "CRASH") and not has_source_line(entry) and pending_reason:
+        # The runner had to stop early: say why, next to the test it stopped in.
+        entry["asserts"] = [("tests/run-tests.sh", 1, pending_reason)]
     if entry["status"] in ("FAIL", "ERROR", "CRASH") and not has_source_line(entry):
         # The notes are the only evidence left (a timeout or a killed runner):
         # show the last one and where it came from.
@@ -477,7 +496,10 @@ bad.sort(key=lambda e: (rank.get(e["status"], 3), e["id"]))
 passed = len(order) - len(bad)
 failed = sum(1 for e in bad if e["status"] == "FAIL")
 errored = sum(1 for e in bad if e["status"] in ("ERROR", "CRASH"))
-ok = not bad and not mismatch and unit_status == "0" and smoke_status == "0"
+# A run that did not finish (timeout, crash) proves less than a full one, even
+# when every test it reached passed: never report that as PASS.
+truncated = bool(pending_reason)
+ok = not bad and not mismatch and unit_status == "0" and smoke_status == "0" and not truncated
 
 with open(os.path.join(run_dir, "failures.txt"), "w") as fh, \
         open(os.path.join(run_dir, "failures.tsv"), "w") as tsv:
@@ -523,6 +545,8 @@ if mismatch:
         out.append(f"    missing records: {', '.join(mismatch['missing'])}")
     if mismatch["extra"]:
         out.append(f"    unexpected records: {', '.join(mismatch['extra'])}")
+if truncated:
+    out.append("  unfinished  " + pending_reason + " — the run stopped early and proves less than a full run")
 if bad:
     out.append(f"  failures ({min(8, len(bad))} of {len(bad)}, full list in failures.txt):")
     for entry in bad[:8]:
@@ -564,22 +588,13 @@ set -e
 
 rm -rf "$RUN/tmp"   # after the analyst has used the plan file in it
 
-# The ledger lives at the top of tests/.test-runs; each run keeps its own copy too.
+# The run folder keeps its own rows (written by the analyser). The shared ledger
+# at the top of tests/.test-runs is that append-only history: this run's rows are
+# appended to it, and runs pruned from disk are folded in once by --prune.
 LEDGER="$LOGS/history.tsv"
-if [[ -f "$LEDGER" ]]; then
-    grep -v '^#' "$LEDGER" >>"$RUN/history.tsv" 2>/dev/null || true
+if [[ ! -f "$LEDGER" ]]; then
+    echo '# run	utc	git_sha	branch	dirty	test	status	ms' >"$LEDGER"
 fi
-
-# Append the run's rows to the shared ledger (kept runs hold only their own).
-{
-    echo '# run	utc	git_sha	branch	dirty	test	status	ms'
-    for ledger in "$LOGS"/*/history.tsv; do
-        [[ "$ledger" == "$RUN/history.tsv" ]] && continue
-        [[ -f "$ledger" ]] || continue
-        grep -v '^#' "$ledger" || true
-    done
-    grep -v '^#' "$RUN/history.tsv" || true
-} | sort -u >"$LOGS/history.tsv.tmp"
-mv "$LOGS/history.tsv.tmp" "$LOGS/history.tsv"
+grep -v '^#' "$RUN/history.tsv" >>"$LEDGER" 2>/dev/null || true
 
 exit "$analysis_status"

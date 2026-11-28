@@ -266,15 +266,23 @@ class RecordingResult(unittest.TextTestResult):
             note(f"subtest {params}: {kind.__name__}: {value}")
 
 
-def discover(module_path="tests"):
-    """The whole suite, in a deterministic order."""
-    root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    directory = os.path.join(root, module_path)
-    if root not in sys.path:
-        sys.path.insert(0, root)
-    if directory not in sys.path:
-        sys.path.insert(0, directory)
-    return unittest.defaultTestLoader.discover(directory, top_level_dir=directory)
+_SUITES = {}
+
+
+def discover():
+    """The whole suite, in a deterministic order; built once per process.
+
+    A run plans its tests and then runs them, and test discovery imports every
+    test module. Doing that twice would double the fixed startup cost.
+    """
+    if "all" not in _SUITES:
+        root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        directory = os.path.join(root, "tests")
+        for path in (root, directory):
+            if path not in sys.path:
+                sys.path.insert(0, path)
+        _SUITES["all"] = unittest.defaultTestLoader.discover(directory, top_level_dir=directory)
+    return _SUITES["all"]
 
 
 def list_tests():
@@ -317,10 +325,23 @@ def _result_class(recorder):
 
 def select(pattern):
     """Suite of every test whose id matches the regex `pattern` (full match)."""
+    if pattern in _SUITES:
+        return _SUITES[pattern]
     keep = [t for t in _walk(discover()) if re.fullmatch(pattern, Recorder.id_for(t))]
     suite = unittest.TestSuite()
     for test in keep:
         suite.addTest(test)
+    _SUITES[pattern] = suite
+    return suite
+
+
+def selected(ids):
+    """Suite of exactly these test ids, in this order, from one discovery pass."""
+    wanted = set(ids)
+    suite = unittest.TestSuite()
+    for test in _walk(discover()):
+        if Recorder.id_for(test) in wanted:
+            suite.addTest(test)
     return suite
 
 

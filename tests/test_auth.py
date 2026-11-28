@@ -145,7 +145,26 @@ class HandlerTest(unittest.TestCase):
 
     HOST = "reg.example.com"
 
+    @classmethod
+    def setUpClass(cls):
+        # One server and one event loop for the whole class. Starting and, above
+        # all, stopping a server costs ~0.5 s (serve_forever polls every 0.5 s),
+        # which used to dominate the suite. The server itself is stateless per
+        # request; everything a request reads is patched per test in setUp.
+        cls.server = ThreadingHTTPServer(("127.0.0.1", 0), inventory.Handler)
+        cls.server_thread = threading.Thread(target=cls.server.serve_forever, daemon=True)
+        cls.server_thread.start()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.server.shutdown()   # returns as soon as the loop has stopped
+        cls.server_thread.join(timeout=5)
+        assert not cls.server_thread.is_alive(), "handler server thread did not stop"
+        cls.server.server_close()
+
     def setUp(self):
+        # Every test starts from an empty session store, a fresh throttle and a
+        # fresh clock: no request data carries over from the test before it.
         self.clock = Clock()
         patches = [
             mock.patch.object(inventory, "now", self.clock),
@@ -159,10 +178,6 @@ class HandlerTest(unittest.TestCase):
         for p in patches:
             p.start()
             self.addCleanup(p.stop)
-        self.server = ThreadingHTTPServer(("127.0.0.1", 0), inventory.Handler)
-        threading.Thread(target=self.server.serve_forever, daemon=True).start()
-        self.addCleanup(self.server.server_close)
-        self.addCleanup(self.server.shutdown)
 
     def call(self, method, path, body=None, headers=None, scheme="https", client="203.0.113.9", private=False):
         conn = http.client.HTTPConnection("127.0.0.1", self.server.server_address[1], timeout=5)
