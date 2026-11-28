@@ -15,6 +15,24 @@ pull=(-u "$pull_user:$PULL_PASSWORD")
 # throwaway private address and repeated runs never lock out the real one.
 scratch_ip="10.$((RANDOM % 250)).$((RANDOM % 250)).$((RANDOM % 250))"
 
+# Machine-readable records for run-tests.sh: each check prints the PASS/FAIL line
+# you read and, on the same line, a "CHECK <name> PASS|FAIL" record that the
+# runner attributes to this script. Names must stay unique, because
+# `run-tests.sh --full <test>` selects one by that name. The shell still decides
+# pass or fail; nothing here re-parses curl output.
+record() {  # record PASS|FAIL <name> [file:line: detail]
+    echo "CHECK $2 $1${3:+ $3}"
+    if [[ "$1" == FAIL && -n "${3:-}" ]]; then
+        echo "ASSERT $3"
+    fi
+}
+note() { echo "NOTE tests/smoke.sh $1"; }
+smoke_where() { echo "tests/smoke.sh:$1"; }
+smoke_die() {
+    note "aborting after the failed check above"
+    exit 1  # no SUMMARY record, so the runner reports the failed check above
+}
+
 request() {
     local method="$1" path="$2"
     shift 2
@@ -24,9 +42,25 @@ expect() {
     local expected="$1" actual="$2" description="$3"
     if [[ "$expected" != "$actual" ]]; then
         echo "FAIL: $description (expected $expected, got $actual)" >&2
-        exit 1
+        record FAIL "$description" "$(smoke_where "$LINENO"): expected $expected, got $actual"
+        smoke_die
     fi
     echo "PASS: $description"
+    record PASS "$description"
+}
+# grep based checks: grep_check <description> <grep args...>
+grep_check() {
+    local description="$1"
+    shift
+    if grep -qi "$@" 2>/dev/null; then
+        echo "PASS: $description"
+        record PASS "$description"
+    else
+        echo "FAIL: $description" >&2
+        record FAIL "$description" "$(smoke_where "$LINENO"): pattern $* not found"
+        note "headers under test: $(tr -d '\r' <"${!#}" | tr '\n' '|')"
+        smoke_die
+    fi
 }
 delete_api() {
     request POST /api/delete -H 'Content-Type: application/json' -H 'X-Registreasy-Action: delete' \
@@ -76,11 +110,9 @@ expect 403 "$(signin "$pull_user" "$PULL_PASSWORD" -H "Origin: $origin")" "sign-
 expect 403 "$(signin "$pull_user" "$PULL_PASSWORD" -H 'X-Registreasy-Action: signin' -H 'Origin: https://evil.example')" "sign-in from another origin is refused"
 expect 401 "$(signin "$pull_user" incorrect -H 'X-Registreasy-Action: signin' -H "Origin: $origin" -H "X-Forwarded-For: $scratch_ip")" "sign-in rejects a wrong password"
 expect 200 "$(signin "$pull_user" "$PULL_PASSWORD" -H 'X-Registreasy-Action: signin' -H "Origin: $origin")" "pull user can sign in"
-grep -qi '^set-cookie:.*HttpOnly.*SameSite=Strict' "$workdir/headers" && echo "PASS: session cookie is HttpOnly and SameSite=Strict" \
-    || { echo "FAIL: session cookie attributes" >&2; cat "$workdir/headers" >&2; exit 1; }
+grep_check "session cookie is HttpOnly and SameSite=Strict" -E '^set-cookie:.*HttpOnly.*SameSite=Strict' "$workdir/headers"
 if [[ "$origin" == https://* ]]; then
-    grep -qi '^set-cookie: __Host-registreasy_session=.*Secure' "$workdir/headers" && echo "PASS: HTTPS cookie is __Host- and Secure" \
-        || { echo "FAIL: HTTPS cookie must be __Host- and Secure" >&2; exit 1; }
+    grep_check "HTTPS cookie is __Host- and Secure" -E '^set-cookie: __Host-registreasy_session=.*Secure' "$workdir/headers"
 fi
 pull_cookie="$(cookie_of)"
 expect 200 "$(request GET /api/session -b "$pull_cookie")" "session cookie is accepted"
@@ -112,10 +144,8 @@ if [[ "$origin" == http://* ]]; then
     expect 200 "$(request GET /healthz "${public[@]}")" "health stays public over plain HTTP"
     expect 200 "$(request GET /api/inventory "${pull[@]}" "${public[@]}" -H 'X-Forwarded-Proto: https')" "public client via a TLS proxy is allowed"
     expect 200 "$(signin "$pull_user" "$PULL_PASSWORD" -H 'X-Registreasy-Action: signin' -H "Origin: $origin" "${public[@]}" -H 'X-Forwarded-Proto: https')" "public client via a TLS proxy can sign in"
-    grep -qi '^set-cookie: __Host-registreasy_session=.*Secure' "$workdir/headers" && echo "PASS: TLS-proxied sign-in gets a __Host- Secure cookie" \
-        || { echo "FAIL: TLS-proxied cookie must be __Host- and Secure" >&2; exit 1; }
-    grep -qi '^strict-transport-security:' "$workdir/headers" && echo "PASS: HSTS sent over HTTPS" \
-        || { echo "FAIL: HSTS missing over HTTPS" >&2; exit 1; }
+    grep_check "TLS-proxied sign-in gets a __Host- Secure cookie" -E '^set-cookie: __Host-registreasy_session=.*Secure' "$workdir/headers"
+    grep_check "HSTS sent over HTTPS" -E '^strict-transport-security:' "$workdir/headers"
     request DELETE /api/session -b "$(cookie_of)" -H "Origin: $origin" -H 'X-Registreasy-Action: signout' "${public[@]}" -H 'X-Forwarded-Proto: https' >/dev/null
 fi
 
@@ -131,3 +161,5 @@ if [[ -n "$location" ]]; then
     expect 204 "$(curl -sS --max-time 15 --output /dev/null --write-out '%{http_code}' -X DELETE \
         "${push[@]}" "$location")" "publisher can cancel the test upload"
 fi
+
+echo "SUMMARY 1 0 0"

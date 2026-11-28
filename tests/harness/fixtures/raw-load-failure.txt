@@ -1,0 +1,6 @@
+### unit: python3 tests/support/record_runner.py (stderr below)
+BEGIN tests/test_auth.py::SessionStoreTest.test_create_and_get
+.TEST PASS tests/test_auth.py::SessionStoreTest.test_create_and_get 12
+BEGIN tests/test_inventory_metadata.py
+.TEST CRASH tests/test_inventory_metadata.py 1
+SUMMARY 1 0 0

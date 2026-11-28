@@ -1,0 +1,7 @@
+### smoke: bash tests/smoke.sh http://127.0.0.1:15000 (timeout 600s)
+PASS: anonymous read challenged
+CHECK anonymous read challenged PASS
+FAIL: pull user cannot start an upload (expected 403, got 200)
+CHECK pull user cannot start an upload FAIL 12 tests/smoke.sh:45: expected 403, got 200
+ASSERT tests/smoke.sh:45: expected 403, got 200
+NOTE tests/smoke.sh aborting after the failed check above

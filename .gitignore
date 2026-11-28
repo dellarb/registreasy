@@ -4,5 +4,6 @@
 data/
 .ci-data/
 docker-compose.override.yml
-*.log
+/*.log
 __pycache__/
+tests/.test-runs/

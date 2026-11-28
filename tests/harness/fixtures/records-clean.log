@@ -1,0 +1,6 @@
+BEGIN tests/test_inventory_metadata.py::RegistrySizeTest.test_stored_files_and_empty_registry
+TEST PASS tests/test_inventory_metadata.py::RegistrySizeTest.test_stored_files_and_empty_registry 2
+BEGIN tests/test_inventory_metadata.py::RegistrySizeTest.test_unreadable_registry_is_unavailable
+NOTE tests/test_inventory_metadata.py::RegistrySizeTest.test_unreadable_registry_is_unavailable tests/test_inventory_metadata.py:31: permission error expected
+TEST PASS tests/test_inventory_metadata.py::RegistrySizeTest.test_unreadable_registry_is_unavailable 1
+SUMMARY 2 0 0

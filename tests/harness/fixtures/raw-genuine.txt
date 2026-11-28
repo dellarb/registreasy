@@ -1,0 +1,23 @@
+### unit: python3 tests/support/record_runner.py (stderr below)
+BEGIN tests/test_auth.py::SessionStoreTest.test_create_and_get
+.TEST PASS tests/test_auth.py::SessionStoreTest.test_create_and_get 0
+BEGIN tests/test_auth.py::SessionStoreTest.test_delete
+NOTE tests/test_auth.py::SessionStoreTest.test_delete tests/support/records.py:61: deleting a token
+ASSERT tests/test_auth.py:44: expected None, got {'user': 'pull'}
+FTEST FAIL tests/test_auth.py::SessionStoreTest.test_delete 3
+======================================================================
+FAIL: test_delete (test_auth.SessionStoreTest.test_delete)
+----------------------------------------------------------------------
+AssertionError: {'user': 'pull'} is not None
+BEGIN tests/test_auth.py::SessionStoreTest.test_idle_timeout_and_sliding_refresh
+.TEST PASS tests/test_auth.py::SessionStoreTest.test_idle_timeout_and_sliding_refresh 1
+BEGIN tests/test_auth.py::ThrottleTest.test_client_lockout_then_recovery
+NOTE tests/test_auth.py::ThrottleTest.test_client_lockout_then_recovery tests/test_auth.py:87: waiting for the lock to expire
+BEGIN tests/test_inventory_metadata.py::ManifestMetadataTest.test_size_for_selected_platform
+.TEST PASS tests/test_inventory_metadata.py::ManifestMetadataTest.test_size_for_selected_platform 0
+
+----------------------------------------------------------------------
+Ran 5 tests in 0.006s
+
+FAILED (failures=1, errors=1)
+SUMMARY 3 1 1

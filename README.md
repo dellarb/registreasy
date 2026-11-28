@@ -183,14 +183,60 @@ Releases with any other tag format fail the workflow without publishing. To use 
 
 ## Development
 
+Run the tests through `tests/run-tests.sh`. It writes everything to a per-run folder and prints
+only a short summary:
+
+```bash
+bash tests/run-tests.sh            # session, throttle, CSRF and inventory unit tests; no container
+bash tests/run-tests.sh SessionStoreTest          # only tests whose id contains this text
+bash tests/run-tests.sh tests/test_auth.py::HelpersTest.test_parse_basic   # exactly this test
+bash tests/run-tests.sh smoke      # unit tests, then the HTTP checks in tests/smoke.sh
+```
+
+The smoke half needs a running registry and both passwords:
+
 ```bash
 docker build -t registreasy:local .
 export PUSH_PASSWORD=test-push PULL_PASSWORD=test-pull
 docker compose up -d --build
-bash tests/smoke.sh http://127.0.0.1:5000
-python3 -m unittest discover -s tests   # session, throttle and CSRF unit tests; no container needed
+SMOKE_ENDPOINT=http://127.0.0.1:5000 bash tests/run-tests.sh smoke
 ```
 
-The smoke tests exercise both accounts' permissions; the test upload they start is cancelled afterwards, so they are safe to run against a live registry. GitHub Actions additionally tests real `docker login`, push and pull behaviour for both accounts, and the delete API.
+Each run gets `tests/.test-runs/<timestamp>/` (gitignored, `latest` is a symlink to the newest):
+
+| File | Contents |
+| --- | --- |
+| `summary.txt` | The short report that was printed: counts, elapsed time, first failures, run path |
+| `failures.txt` / `failures.tsv` | Every failure with the test id, `file:line`, expected/got and the path of its log |
+| `detail/<suite>/<test>.log` | What that test printed, plus its assertion and note records |
+| `raw.txt` | The executables' complete, unfiltered output |
+| `records.txt` | The machine records (`BEGIN`/`TEST`/`ASSERT`/`NOTE`/`CHECK`/`SUMMARY`) those tools emitted |
+| `meta.txt`, `tests.txt`, `history.tsv` | Git SHA/branch/dirty state, per-test status, append-only ledger |
+
+Read a failure from the run folder instead of re-running:
+
+```bash
+bash tests/run-tests.sh --last            # reprint the newest summary.txt
+bash tests/run-tests.sh --full <test>     # print one test's log from the newest run
+bash tests/run-tests.sh --prune --keep 5  # delete all but the 5 newest runs
+```
+
+A test that dies mid-run (a hard crash or `--timeout`, default 600 s) is reported as `ERROR` with
+the engine's last frame, never as a pass; a file that fails to import is its own `CRASH`; and if
+the runner's records and the shell's count disagree, the summary says `COUNT MISMATCH` and marks
+all counts unreliable.
+
+To change the runner itself, run its offline check first — it replaces only the execution step
+with fixtures and asserts every file the runner should write:
+
+```bash
+bash tests/harness/verify-runner.sh
+```
+
+`python3 -m unittest discover -s tests` still runs the unit tests without the runner (this is what
+CI's unit-test step calls). The smoke tests exercise both accounts' permissions; the test upload
+they start is cancelled afterwards, so they are safe to run against a live registry. GitHub
+Actions additionally tests real `docker login`, push and pull behaviour for both accounts, and the
+delete API.
 
 This project wraps [CNCF Distribution](https://distribution.github.io/distribution/) and [Nginx](https://nginx.org/), rather than implementing image storage itself.

@@ -1,0 +1,11 @@
+### unit: python3 tests/support/record_runner.py (stderr below)
+BEGIN tests/test_auth.py::SessionStoreTest.test_create_and_get
+.TEST PASS tests/test_auth.py::SessionStoreTest.test_create_and_get 12
+BEGIN tests/test_auth.py::SessionStoreTest.test_delete
+NOTE tests/test_auth.py::SessionStoreTest.test_delete tests/test_auth.py:40: about to lose the interpreter
+Fatal Python error: Aborted
+
+Current thread 0x00007f8f2c0b8740 (most recent call first):
+  File "/repo/tests/test_auth.py", line 41, in test_delete
+    os._exit(137)
+Aborted (core dumped)

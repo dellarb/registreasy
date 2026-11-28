@@ -1,0 +1,4 @@
+CHECK anonymous read challenged PASS
+CHECK pull user cannot start an upload FAIL 12 tests/smoke.sh:45: expected 403, got 200
+ASSERT tests/smoke.sh:45: expected 403, got 200
+NOTE tests/smoke.sh aborting after the failed check above

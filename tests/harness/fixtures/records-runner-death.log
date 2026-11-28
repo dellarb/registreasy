@@ -1,0 +1,4 @@
+BEGIN tests/test_auth.py::SessionStoreTest.test_create_and_get
+TEST PASS tests/test_auth.py::SessionStoreTest.test_create_and_get 12
+BEGIN tests/test_auth.py::SessionStoreTest.test_delete
+NOTE tests/test_auth.py::SessionStoreTest.test_delete tests/test_auth.py:40: about to lose the interpreter

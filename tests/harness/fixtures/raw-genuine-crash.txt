@@ -1,0 +1,23 @@
+### unit: python3 tests/support/record_runner.py (stderr below)
+BEGIN tests/test_auth.py::SessionStoreTest.test_create_and_get
+.TEST PASS tests/test_auth.py::SessionStoreTest.test_create_and_get 0
+BEGIN tests/test_auth.py::SessionStoreTest.test_delete
+NOTE tests/test_auth.py::SessionStoreTest.test_delete tests/support/records.py:61: deleting a token
+ASSERT tests/test_auth.py:44: expected None, got {'user': 'pull'}
+FTEST FAIL tests/test_auth.py::SessionStoreTest.test_delete 3
+BEGIN tests/test_auth.py::SessionStoreTest.test_idle_timeout_and_sliding_refresh
+.TEST PASS tests/test_auth.py::SessionStoreTest.test_idle_timeout_and_sliding_refresh 1
+BEGIN tests/test_auth.py::ThrottleTest.test_client_lockout_then_recovery
+NOTE tests/test_auth.py::ThrottleTest.test_client_lockout_then_recovery tests/test_auth.py:87: waiting for the lock to expire
+Traceback (most recent call last):
+  File "/repo/tests/test_auth.py", line 89, in test_client_lockout_then_recovery
+    self.assertEqual(throttle.retry_after("1.2.3.4", "push", False), 0)
+RuntimeError: throttle state was corrupted mid-test
+ASSERT tests/test_auth.py:89: RuntimeError: throttle state was corrupted mid-test
+TEST CRASH tests/test_auth.py::ThrottleTest.test_client_lockout_then_recovery 2
+BEGIN tests/test_inventory_metadata.py::ManifestMetadataTest.test_size_for_selected_platform
+.TEST PASS tests/test_inventory_metadata.py::ManifestMetadataTest.test_size_for_selected_platform 0
+
+----------------------------------------------------------------------
+FAILED (failures=1)
+SUMMARY 3 1 1
